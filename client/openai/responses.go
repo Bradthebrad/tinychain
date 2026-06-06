@@ -36,10 +36,11 @@ func TextInput(text string) ResponsesInput {
 func MessageInput(messages []lc.BaseMessage) ResponsesInput {
 	items := make([]ResponsesInputItem, 0, len(messages))
 	for _, msg := range messages {
+		role := openAIRole(msg.Type)
 		items = append(items, ResponsesInputItem{
 			Type:    "message",
-			Role:    openAIRole(msg.Type),
-			Content: []ResponsesContent{{Type: "input_text", Text: contentText(msg.Content)}},
+			Role:    role,
+			Content: []ResponsesContent{{Type: responsesTextType(role), Text: contentText(msg.Content)}},
 		})
 	}
 	return ResponsesInput{Items: items}
@@ -151,4 +152,11 @@ func contentText(content lc.Content) string {
 		}
 	}
 	return ""
+}
+
+func responsesTextType(role string) string {
+	if role == "assistant" {
+		return "output_text"
+	}
+	return "input_text"
 }

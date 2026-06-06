@@ -37,6 +37,27 @@ func MessageInput(messages []lc.BaseMessage) ResponsesInput {
 	items := make([]ResponsesInputItem, 0, len(messages))
 	for _, msg := range messages {
 		role := openAIRole(msg.Type)
+		if role == "tool" {
+			items = append(items, ResponsesInputItem{
+				Type:   "function_call_output",
+				CallID: msg.ToolCallID,
+				Output: contentText(msg.Content),
+			})
+			continue
+		}
+		if len(msg.ToolCalls) > 0 {
+			for _, call := range msg.ToolCalls {
+				items = append(items, ResponsesInputItem{
+					Type:      "function_call",
+					CallID:    call.ID,
+					Name:      call.Name,
+					Arguments: Arguments(call.Args),
+				})
+			}
+			if contentText(msg.Content) == "" {
+				continue
+			}
+		}
 		items = append(items, ResponsesInputItem{
 			Type:    "message",
 			Role:    role,
@@ -47,14 +68,15 @@ func MessageInput(messages []lc.BaseMessage) ResponsesInput {
 }
 
 type ResponsesInputItem struct {
-	Type    string             `json:"type"`
-	Role    string             `json:"role,omitempty"`
-	Content []ResponsesContent `json:"content,omitempty"`
-	ID      string             `json:"id,omitempty"`
-	CallID  string             `json:"call_id,omitempty"`
-	Name    string             `json:"name,omitempty"`
-	Input   map[string]any     `json:"input,omitempty"`
-	Output  string             `json:"output,omitempty"`
+	Type      string             `json:"type"`
+	Role      string             `json:"role,omitempty"`
+	Content   []ResponsesContent `json:"content,omitempty"`
+	ID        string             `json:"id,omitempty"`
+	CallID    string             `json:"call_id,omitempty"`
+	Name      string             `json:"name,omitempty"`
+	Arguments string             `json:"arguments,omitempty"`
+	Input     map[string]any     `json:"input,omitempty"`
+	Output    string             `json:"output,omitempty"`
 }
 
 type ResponsesContent struct {

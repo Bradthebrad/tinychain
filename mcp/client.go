@@ -52,7 +52,6 @@ func (c *Client) Initialize(ctx context.Context) (*InitializeResult, error) {
 	}, &result); err != nil {
 		return nil, err
 	}
-	_, _ = c.request(ctx, "notifications/initialized", nil)
 	return &result, nil
 }
 
@@ -185,15 +184,29 @@ func (t *StdioTransport) RoundTrip(ctx context.Context, req Request) (Response, 
 	if _, err := t.stdin.Write(append(data, '\n')); err != nil {
 		return Response{}, err
 	}
-	line, err := t.reader.ReadBytes('\n')
-	if err != nil {
-		return Response{}, err
+	type readResult struct {
+		line []byte
+		err  error
 	}
-	var out Response
-	if err := json.Unmarshal(line, &out); err != nil {
-		return Response{}, err
+	done := make(chan readResult, 1)
+	go func() {
+		line, err := t.reader.ReadBytes('\n')
+		done <- readResult{line: line, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		_ = t.Close()
+		return Response{}, ctx.Err()
+	case result := <-done:
+		if result.err != nil {
+			return Response{}, result.err
+		}
+		var out Response
+		if err := json.Unmarshal(result.line, &out); err != nil {
+			return Response{}, err
+		}
+		return out, nil
 	}
-	return out, nil
 }
 
 func (t *StdioTransport) Close() error {

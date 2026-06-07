@@ -117,7 +117,35 @@ tinychain/
     lc/
     openai/
   agent/
+  examples/
+    openai_example_agent/
   mcp/
+```
+
+## Tiny OpenAI Example Agent
+
+The repo includes a baby-sized CLI REPL example that uses the `agent` and `client` modules directly:
+
+```powershell
+cd examples/openai_example_agent
+go run . -api-key sk-your-key
+```
+
+It defaults to `gpt-4o-mini` and supports:
+
+| Flag | Purpose |
+| --- | --- |
+| `-api-key` | OpenAI API key. Falls back to `OPENAI_API_KEY`. |
+| `-model` | Model name. Defaults to `gpt-4o-mini`. |
+| `-base-url` | OpenAI-compatible base URL. |
+| `-responses` | Use the Responses API instead of Chat Completions. |
+| `-system` | Override the system prompt. |
+
+Build the release executable:
+
+```powershell
+cd examples/openai_example_agent
+go build -trimpath -ldflags "-s -w" -o ..\..\openai_example_agent.exe .
 ```
 
 ## Tests

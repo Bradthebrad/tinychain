@@ -148,6 +148,14 @@ cd examples/openai_example_agent
 go build -trimpath -ldflags "-s -w" -o ..\..\openai_example_agent.exe .
 ```
 
+There is also an even smaller direct chat REPL that skips the agent layer and calls the OpenAI client directly:
+
+```powershell
+cd examples/openai_example_chat
+go run . -api-key sk-your-key
+go build -trimpath -ldflags "-s -w" -o ..\..\openai_example_chat.exe .
+```
+
 ## Tests
 
 Run module tests individually:

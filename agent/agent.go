@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"tinychain/callbacks"
 	"tinychain/lc"
@@ -115,16 +116,52 @@ func (a *Agent) InvokeMessages(ctx context.Context, input []lc.BaseMessage) (*Re
 func (a *Agent) executeTool(ctx context.Context, call lc.ToolCall) lc.BaseMessage {
 	tool, ok := a.tools[call.Name]
 	if !ok {
+		if a.callbacks != nil {
+			a.callbacks.Handle(callbacks.Event{
+				Event: callbacks.EventToolError,
+				Name:  call.Name,
+				RunID: call.ID,
+				Time:  time.Now().UTC(),
+				Data:  callbacks.EventData{Input: call.Args, Error: fmt.Sprintf("tool %q not found", call.Name)},
+			})
+		}
 		return lc.Tool(call.ID, fmt.Sprintf("tool %q not found", call.Name))
+	}
+	if a.callbacks != nil {
+		a.callbacks.Handle(callbacks.Event{
+			Event: callbacks.EventToolStart,
+			Name:  call.Name,
+			RunID: call.ID,
+			Time:  time.Now().UTC(),
+			Data:  callbacks.EventData{Input: call.Args},
+		})
 	}
 	output, err := tool.Call(ctx, call.Args)
 	if err != nil {
+		if a.callbacks != nil {
+			a.callbacks.Handle(callbacks.Event{
+				Event: callbacks.EventToolError,
+				Name:  call.Name,
+				RunID: call.ID,
+				Time:  time.Now().UTC(),
+				Data:  callbacks.EventData{Input: call.Args, Error: err.Error()},
+			})
+		}
 		return lc.BaseMessage{
 			Type:       lc.RoleTool,
 			ToolCallID: call.ID,
 			Content:    lc.TextContent(err.Error()),
 			Status:     "error",
 		}
+	}
+	if a.callbacks != nil {
+		a.callbacks.Handle(callbacks.Event{
+			Event: callbacks.EventToolEnd,
+			Name:  call.Name,
+			RunID: call.ID,
+			Time:  time.Now().UTC(),
+			Data:  callbacks.EventData{Input: call.Args, Output: output},
+		})
 	}
 	return lc.BaseMessage{
 		Type:       lc.RoleTool,

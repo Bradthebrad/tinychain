@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"tinychain/callbacks"
 	"tinychain/lc"
 )
 
@@ -30,6 +31,7 @@ func (m *fakeModel) Call(ctx context.Context, messages []lc.BaseMessage, tools [
 
 func TestAgentRunsToolLoop(t *testing.T) {
 	model := &fakeModel{}
+	var events []callbacks.EventName
 	a := New(Config{
 		Model: model,
 		Tools: []Tool{ToolFunc{
@@ -42,6 +44,9 @@ func TestAgentRunsToolLoop(t *testing.T) {
 				return stringArg(args, "text"), nil
 			},
 		}},
+		Callbacks: callbacks.SinkFunc(func(event callbacks.Event) {
+			events = append(events, event.Event)
+		}),
 	})
 
 	result, err := a.Invoke(context.Background(), "start")
@@ -54,6 +59,18 @@ func TestAgentRunsToolLoop(t *testing.T) {
 	if text := contentText(result.Output.Content); text != "final answer" {
 		t.Fatalf("output = %q", text)
 	}
+	if !containsEvent(events, callbacks.EventToolStart) || !containsEvent(events, callbacks.EventToolEnd) {
+		t.Fatalf("tool callbacks missing: %#v", events)
+	}
+}
+
+func containsEvent(events []callbacks.EventName, want callbacks.EventName) bool {
+	for _, event := range events {
+		if event == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestComposeSystemPromptIncludesSkillsAndMemory(t *testing.T) {

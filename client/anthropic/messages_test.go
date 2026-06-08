@@ -1,7 +1,10 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"tinychain/lc"
@@ -30,4 +33,40 @@ func TestMessagesSeparateSystemAndToolResult(t *testing.T) {
 	if messages[1].Content.Blocks[0].Type != "tool_result" {
 		t.Fatalf("tool block type = %q", messages[1].Content.Blocks[0].Type)
 	}
+}
+
+func TestClientRetriesTransientStatus(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			http.Error(w, "overloaded", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"msg_test","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	client := Client{BaseURL: server.URL}
+	resp, err := client.Messages(context.Background(), MessageRequest{
+		Model:     "claude-test",
+		MaxTokens: 32,
+		Messages: []Message{{
+			Role:    "user",
+			Content: ContentList{Text: strPtr("hi")},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d", attempts)
+	}
+	if got := resp.Content[0].Text; got != "ok" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+func strPtr(value string) *string {
+	return &value
 }

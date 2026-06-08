@@ -9,7 +9,7 @@ import (
 	"tinychain/lc"
 )
 
-const DefaultMaxIterations = 8
+const DefaultMaxIterations = 20
 
 type Config struct {
 	Model         Model

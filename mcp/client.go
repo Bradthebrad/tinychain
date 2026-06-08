@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -37,6 +38,14 @@ func NewSSEClient(messageURL string, headers map[string]string) *Client {
 
 func NewStdioClient(ctx context.Context, command string, args ...string) (*Client, error) {
 	transport, err := NewStdioTransport(ctx, command, args...)
+	if err != nil {
+		return nil, err
+	}
+	return NewClient(transport), nil
+}
+
+func NewStdioClientWithEnv(ctx context.Context, command string, args []string, env map[string]string) (*Client, error) {
+	transport, err := NewStdioTransportWithEnv(ctx, command, args, env)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +168,17 @@ type StdioTransport struct {
 }
 
 func NewStdioTransport(ctx context.Context, command string, args ...string) (*StdioTransport, error) {
+	return NewStdioTransportWithEnv(ctx, command, args, nil)
+}
+
+func NewStdioTransportWithEnv(ctx context.Context, command string, args []string, env map[string]string) (*StdioTransport, error) {
 	cmd := exec.CommandContext(ctx, command, args...)
+	if len(env) > 0 {
+		cmd.Env = os.Environ()
+		for key, value := range env {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

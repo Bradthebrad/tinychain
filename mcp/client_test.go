@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +39,35 @@ func TestInitializeDoesNotWaitForInitializedNotification(t *testing.T) {
 	if len(transport.methods) != 1 || transport.methods[0] != "initialize" {
 		t.Fatalf("methods = %#v", transport.methods)
 	}
+}
+
+func TestStdioClientPassesEnvironment(t *testing.T) {
+	if os.Getenv("TINYCHAIN_MCP_ENV_HELPER") == "1" {
+		helperEnvServer()
+		return
+	}
+	client, err := NewStdioClientWithEnv(context.Background(), os.Args[0], []string{"-test.run=TestStdioClientPassesEnvironment", "--"}, map[string]string{
+		"TINYCHAIN_MCP_ENV_HELPER": "1",
+		"TINYCHAIN_MCP_ENV_VALUE":  "hello-env",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	result, err := client.Initialize(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ServerInfo.Name != "hello-env" {
+		t.Fatalf("server info = %#v", result.ServerInfo)
+	}
+}
+
+func helperEnvServer() {
+	reader := bufio.NewReader(os.Stdin)
+	_, _ = reader.ReadBytes('\n')
+	fmt.Printf(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"%s","capabilities":{},"serverInfo":{"name":"%s"}}}`+"\n", ProtocolVersion, os.Getenv("TINYCHAIN_MCP_ENV_VALUE"))
+	os.Exit(0)
 }
 
 type closeWriter struct {

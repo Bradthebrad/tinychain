@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"tinychain/lc"
@@ -59,5 +60,30 @@ func TestMessageInputEncodesToolCallHistory(t *testing.T) {
 	}
 	if items[1].Type != "function_call_output" || items[1].CallID != "call_1" || items[1].Output == "" {
 		t.Fatalf("function output item = %#v", items[1])
+	}
+}
+
+func TestMessageInputTranslatesImageParts(t *testing.T) {
+	input := MessageInput([]lc.BaseMessage{{
+		Type: lc.RoleHuman,
+		Content: lc.PartsContent(
+			lc.ContentPart{Type: "text", Text: "look"},
+			lc.ContentPart{Type: "image", Source: &lc.ContentSource{MediaType: "image/png", Data: "abc"}},
+		),
+	}})
+
+	data, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var items []ResponsesInputItem
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || len(items[0].Content) != 2 {
+		t.Fatalf("items = %#v", items)
+	}
+	if items[0].Content[1].Type != "input_image" || !strings.Contains(items[0].Content[1].ImageURL, "data:image/png;base64,abc") {
+		t.Fatalf("image content = %#v", items[0].Content[1])
 	}
 }

@@ -19,6 +19,25 @@ type ContentPart struct {
 	Extra      map[string]any `json:"-"`
 }
 
+func (p ContentPart) MarshalJSON() ([]byte, error) {
+	type alias ContentPart
+	baseBytes, err := json.Marshal(alias(p))
+	if err != nil {
+		return nil, err
+	}
+	if len(p.Extra) == 0 {
+		return baseBytes, nil
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(baseBytes, &fields); err != nil {
+		return nil, err
+	}
+	for key, value := range p.Extra {
+		fields[key] = value
+	}
+	return json.Marshal(fields)
+}
+
 type ContentSource struct {
 	Type      string `json:"type,omitempty"`
 	MediaType string `json:"media_type,omitempty"`

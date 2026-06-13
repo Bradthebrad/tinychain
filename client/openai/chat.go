@@ -98,13 +98,33 @@ func ChatMessages(messages []lc.BaseMessage) []ChatMessage {
 	for _, msg := range messages {
 		out = append(out, ChatMessage{
 			Role:       openAIRole(msg.Type),
-			Content:    msg.Content,
+			Content:    openAIContent(msg.Content),
 			Name:       msg.Name,
 			ToolCallID: msg.ToolCallID,
 			ToolCalls:  openAIToolCalls(msg.ToolCalls),
 		})
 	}
 	return out
+}
+
+func openAIContent(content lc.Content) lc.Content {
+	if content.Text != nil {
+		return content
+	}
+	parts := make([]lc.ContentPart, 0, len(content.Parts))
+	for _, part := range content.Parts {
+		if part.Type == "image" && part.Source != nil {
+			url := part.Source.URL
+			if url == "" && part.Source.Data != "" {
+				url = "data:" + part.Source.MediaType + ";base64," + part.Source.Data
+			}
+			part.Type = "image_url"
+			part.Source = nil
+			part.Extra = map[string]any{"image_url": map[string]any{"url": url}}
+		}
+		parts = append(parts, part)
+	}
+	return lc.PartsContent(parts...)
 }
 
 func ToLangChainMessage(message ChatMessage) lc.BaseMessage {

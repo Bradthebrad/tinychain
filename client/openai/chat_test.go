@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"tinychain/lc"
@@ -34,6 +35,24 @@ func TestChatMessagesConvertLangChainRolesAndToolCalls(t *testing.T) {
 	}
 	if len(data) == 0 {
 		t.Fatal("empty JSON")
+	}
+}
+
+func TestChatMessagesTranslateImageParts(t *testing.T) {
+	messages := ChatMessages([]lc.BaseMessage{{
+		Type: lc.RoleHuman,
+		Content: lc.PartsContent(
+			lc.ContentPart{Type: "text", Text: "look"},
+			lc.ContentPart{Type: "image", Source: &lc.ContentSource{MediaType: "image/png", Data: "abc"}},
+		),
+	}})
+	data, err := json.Marshal(messages[0].Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"type":"image_url"`) || !strings.Contains(text, `data:image/png;base64,abc`) {
+		t.Fatalf("content JSON = %s", text)
 	}
 }
 

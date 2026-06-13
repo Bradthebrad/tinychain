@@ -61,10 +61,31 @@ func MessageInput(messages []lc.BaseMessage) ResponsesInput {
 		items = append(items, ResponsesInputItem{
 			Type:    "message",
 			Role:    role,
-			Content: []ResponsesContent{{Type: responsesTextType(role), Text: contentText(msg.Content)}},
+			Content: responsesContent(role, msg.Content),
 		})
 	}
 	return ResponsesInput{Items: items}
+}
+
+func responsesContent(role string, content lc.Content) []ResponsesContent {
+	if content.Text != nil {
+		return []ResponsesContent{{Type: responsesTextType(role), Text: *content.Text}}
+	}
+	out := make([]ResponsesContent, 0, len(content.Parts))
+	for _, part := range content.Parts {
+		if part.Text != "" {
+			out = append(out, ResponsesContent{Type: responsesTextType(role), Text: part.Text})
+			continue
+		}
+		if part.Type == "image" && part.Source != nil {
+			url := part.Source.URL
+			if url == "" && part.Source.Data != "" {
+				url = "data:" + part.Source.MediaType + ";base64," + part.Source.Data
+			}
+			out = append(out, ResponsesContent{Type: "input_image", ImageURL: url})
+		}
+	}
+	return out
 }
 
 type ResponsesInputItem struct {

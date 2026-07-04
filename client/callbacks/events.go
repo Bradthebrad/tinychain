@@ -12,6 +12,7 @@ const (
 	EventChatModelStart EventName = "on_chat_model_start"
 	EventLLMStart       EventName = "on_llm_start"
 	EventLLMNewToken    EventName = "on_llm_new_token"
+	EventLLMReasoning   EventName = "on_llm_reasoning"
 	EventLLMEnd         EventName = "on_llm_end"
 	EventLLMError       EventName = "on_llm_error"
 	EventChainStart     EventName = "on_chain_start"
@@ -84,6 +85,22 @@ func LLMNewToken(runID, token string) Event {
 		RunID: runID,
 		Time:  time.Now().UTC(),
 		Data:  EventData{Token: token, Chunk: &GenerationChunk{Text: token}},
+	}
+}
+
+func LLMReasoning(runID, text string) Event {
+	return Event{
+		Event: EventLLMReasoning,
+		RunID: runID,
+		Time:  time.Now().UTC(),
+		Data: EventData{
+			Token: text,
+			Chunk: &GenerationChunk{
+				Text: text,
+				Type: "reasoning",
+			},
+			Extra: map[string]any{"kind": "reasoning"},
+		},
 	}
 }
 

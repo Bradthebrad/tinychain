@@ -144,15 +144,22 @@ type ResponsesResponse struct {
 }
 
 type ResponsesOutputItem struct {
-	ID        string             `json:"id,omitempty"`
-	Type      string             `json:"type"`
-	Status    string             `json:"status,omitempty"`
-	Role      string             `json:"role,omitempty"`
-	Content   []ResponsesContent `json:"content,omitempty"`
-	CallID    string             `json:"call_id,omitempty"`
-	Name      string             `json:"name,omitempty"`
-	Arguments string             `json:"arguments,omitempty"`
-	Output    string             `json:"output,omitempty"`
+	ID               string             `json:"id,omitempty"`
+	Type             string             `json:"type"`
+	Status           string             `json:"status,omitempty"`
+	Role             string             `json:"role,omitempty"`
+	Content          []ResponsesContent `json:"content,omitempty"`
+	Summary          []ResponsesSummary `json:"summary,omitempty"`
+	EncryptedContent string             `json:"encrypted_content,omitempty"`
+	CallID           string             `json:"call_id,omitempty"`
+	Name             string             `json:"name,omitempty"`
+	Arguments        string             `json:"arguments,omitempty"`
+	Output           string             `json:"output,omitempty"`
+}
+
+type ResponsesSummary struct {
+	Type string `json:"type,omitempty"`
+	Text string `json:"text,omitempty"`
 }
 
 func (i ResponsesInput) MarshalJSON() ([]byte, error) {

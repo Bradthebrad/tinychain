@@ -15,6 +15,8 @@ type ChatCompletionRequest struct {
 	TopLogprobs         *int           `json:"top_logprobs,omitempty"`
 	MaxTokens           *int           `json:"max_tokens,omitempty"`
 	MaxCompletionTokens *int           `json:"max_completion_tokens,omitempty"`
+	ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
+	Reasoning           any            `json:"reasoning,omitempty"`
 	N                   *int           `json:"n,omitempty"`
 	ParallelToolCalls   *bool          `json:"parallel_tool_calls,omitempty"`
 	PresencePenalty     *float64       `json:"presence_penalty,omitempty"`
@@ -32,12 +34,15 @@ type ChatCompletionRequest struct {
 }
 
 type ChatMessage struct {
-	Role       string     `json:"role"`
-	Content    lc.Content `json:"content,omitempty"`
-	Name       string     `json:"name,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	Refusal    string     `json:"refusal,omitempty"`
+	Role             string     `json:"role"`
+	Content          lc.Content `json:"content,omitempty"`
+	Name             string     `json:"name,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	Refusal          string     `json:"refusal,omitempty"`
+	Reasoning        string     `json:"reasoning,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ReasoningDetails any        `json:"reasoning_details,omitempty"`
 }
 
 type Tool struct {
@@ -96,13 +101,19 @@ type Usage struct {
 func ChatMessages(messages []lc.BaseMessage) []ChatMessage {
 	out := make([]ChatMessage, 0, len(messages))
 	for _, msg := range messages {
-		out = append(out, ChatMessage{
+		chat := ChatMessage{
 			Role:       openAIRole(msg.Type),
 			Content:    openAIContent(msg.Content),
 			Name:       msg.Name,
 			ToolCallID: msg.ToolCallID,
 			ToolCalls:  openAIToolCalls(msg.ToolCalls),
-		})
+		}
+		if msg.AdditionalKwargs != nil {
+			chat.Reasoning = stringKwarg(msg.AdditionalKwargs, "reasoning")
+			chat.ReasoningContent = stringKwarg(msg.AdditionalKwargs, "reasoning_content")
+			chat.ReasoningDetails = msg.AdditionalKwargs["reasoning_details"]
+		}
+		out = append(out, chat)
 	}
 	return out
 }
@@ -128,15 +139,25 @@ func openAIContent(content lc.Content) lc.Content {
 }
 
 func ToLangChainMessage(message ChatMessage) lc.BaseMessage {
+	kwargs := map[string]any{
+		"refusal": message.Refusal,
+	}
+	if message.Reasoning != "" {
+		kwargs["reasoning"] = message.Reasoning
+	}
+	if message.ReasoningContent != "" {
+		kwargs["reasoning_content"] = message.ReasoningContent
+	}
+	if message.ReasoningDetails != nil {
+		kwargs["reasoning_details"] = message.ReasoningDetails
+	}
 	return lc.BaseMessage{
-		Type:       lcRole(message.Role),
-		Content:    message.Content,
-		Name:       message.Name,
-		ToolCallID: message.ToolCallID,
-		ToolCalls:  lcToolCalls(message.ToolCalls),
-		AdditionalKwargs: map[string]any{
-			"refusal": message.Refusal,
-		},
+		Type:             lcRole(message.Role),
+		Content:          message.Content,
+		Name:             message.Name,
+		ToolCallID:       message.ToolCallID,
+		ToolCalls:        lcToolCalls(message.ToolCalls),
+		AdditionalKwargs: kwargs,
 	}
 }
 
@@ -223,4 +244,9 @@ func lcToolCalls(calls []ToolCall) []lc.ToolCall {
 		})
 	}
 	return out
+}
+
+func stringKwarg(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return value
 }

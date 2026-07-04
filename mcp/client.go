@@ -173,6 +173,7 @@ func NewStdioTransport(ctx context.Context, command string, args ...string) (*St
 
 func NewStdioTransportWithEnv(ctx context.Context, command string, args []string, env map[string]string) (*StdioTransport, error) {
 	cmd := exec.CommandContext(ctx, command, args...)
+	configureStdioCommand(cmd)
 	if len(env) > 0 {
 		cmd.Env = os.Environ()
 		for key, value := range env {

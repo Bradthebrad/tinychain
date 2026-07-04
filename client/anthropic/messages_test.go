@@ -67,6 +67,26 @@ func TestClientRetriesTransientStatus(t *testing.T) {
 	}
 }
 
+func TestThinkingBlocksArePreservedAsReasoning(t *testing.T) {
+	msg := ToLangChainMessage(MessageResponse{
+		ID:    "msg_1",
+		Role:  "assistant",
+		Model: "claude-test",
+		Content: []ContentBlock{
+			{Type: "thinking", Thinking: "considered the edge cases", Signature: "sig"},
+			{Type: "text", Text: "answer"},
+		},
+		Usage: Usage{InputTokens: 1, OutputTokens: 2},
+	})
+	reasoning := lc.VisibleReasoning(msg)
+	if len(reasoning) != 1 || reasoning[0] != "considered the edge cases" {
+		t.Fatalf("reasoning = %#v", reasoning)
+	}
+	if msg.Content.Parts[0].Type != "thinking" || msg.Content.Parts[0].Text != "considered the edge cases" {
+		t.Fatalf("thinking part = %#v", msg.Content.Parts[0])
+	}
+}
+
 func strPtr(value string) *string {
 	return &value
 }

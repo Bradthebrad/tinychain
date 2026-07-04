@@ -20,6 +20,7 @@ type Config struct {
 	Subagents     []Subagent
 	MaxIterations int
 	Callbacks     callbacks.Sink
+	Context       ContextPolicy
 }
 
 type Agent struct {
@@ -31,6 +32,7 @@ type Agent struct {
 	memory        []Memory
 	maxIterations int
 	callbacks     callbacks.Sink
+	context       ContextPolicy
 }
 
 type Result struct {
@@ -48,6 +50,7 @@ func New(config Config) *Agent {
 		memory:        config.Memory,
 		maxIterations: config.MaxIterations,
 		callbacks:     config.Callbacks,
+		context:       normalizeContextPolicy(config.Context),
 	}
 	if a.maxIterations == 0 {
 		a.maxIterations = DefaultMaxIterations
@@ -84,11 +87,26 @@ func (a *Agent) InvokeMessages(ctx context.Context, input []lc.BaseMessage) (*Re
 	messages := append([]lc.BaseMessage{}, a.systemMessages()...)
 	messages = append(messages, input...)
 	runID := "agent"
-	if a.callbacks != nil {
-		a.callbacks.Handle(callbacks.ChatModelStart("agent", runID, [][]lc.BaseMessage{messages}))
-	}
 	for step := 0; step < a.maxIterations; step++ {
-		msg, err := a.model.Call(ctx, messages, a.toolOrder)
+		compactedForRetry := false
+		var msg lc.BaseMessage
+		var err error
+		for {
+			messages = a.compactIfNeeded(ctx, messages, runID, false)
+			if a.callbacks != nil {
+				a.callbacks.Handle(callbacks.ChatModelStart("agent", runID, [][]lc.BaseMessage{messages}))
+			}
+			msg, err = a.model.Call(ctx, messages, a.toolOrder)
+			if err != nil && !compactedForRetry && a.shouldCompactAfterError(err) {
+				next := a.compactIfNeeded(ctx, messages, runID, true)
+				if EstimateTokens(next) < EstimateTokens(messages) {
+					messages = next
+					compactedForRetry = true
+					continue
+				}
+			}
+			break
+		}
 		if err != nil {
 			if a.callbacks != nil {
 				a.callbacks.Handle(callbacks.Error(callbacks.EventLLMError, runID, err))
@@ -96,6 +114,7 @@ func (a *Agent) InvokeMessages(ctx context.Context, input []lc.BaseMessage) (*Re
 			return nil, err
 		}
 		messages = append(messages, msg)
+		a.emitReasoning(runID, msg)
 		if len(msg.ToolCalls) == 0 {
 			result := &Result{Messages: messages, Output: msg, Steps: step + 1}
 			if a.callbacks != nil {
@@ -106,14 +125,23 @@ func (a *Agent) InvokeMessages(ctx context.Context, input []lc.BaseMessage) (*Re
 			return result, nil
 		}
 		for _, call := range msg.ToolCalls {
-			toolMsg := a.executeTool(ctx, call)
+			toolMsg := a.executeTool(ctx, call, messages)
 			messages = append(messages, toolMsg)
 		}
 	}
 	return nil, fmt.Errorf("agent: stopped after %d iterations with pending tool calls", a.maxIterations)
 }
 
-func (a *Agent) executeTool(ctx context.Context, call lc.ToolCall) lc.BaseMessage {
+func (a *Agent) emitReasoning(runID string, msg lc.BaseMessage) {
+	if a.callbacks == nil {
+		return
+	}
+	for _, text := range lc.VisibleReasoning(msg) {
+		a.callbacks.Handle(callbacks.LLMReasoning(runID, text))
+	}
+}
+
+func (a *Agent) executeTool(ctx context.Context, call lc.ToolCall, messages []lc.BaseMessage) lc.BaseMessage {
 	tool, ok := a.tools[call.Name]
 	if !ok {
 		if a.callbacks != nil {
@@ -154,6 +182,7 @@ func (a *Agent) executeTool(ctx context.Context, call lc.ToolCall) lc.BaseMessag
 			Status:     "error",
 		}
 	}
+	output = a.guardToolOutput(messages, output)
 	if a.callbacks != nil {
 		a.callbacks.Handle(callbacks.Event{
 			Event: callbacks.EventToolEnd,

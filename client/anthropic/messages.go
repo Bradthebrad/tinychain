@@ -12,10 +12,15 @@ type MessageRequest struct {
 	Stream        *bool         `json:"stream,omitempty"`
 	Temperature   *float64      `json:"temperature,omitempty"`
 	Thinking      any           `json:"thinking,omitempty"`
+	OutputConfig  *OutputConfig `json:"output_config,omitempty"`
 	ToolChoice    any           `json:"tool_choice,omitempty"`
 	Tools         []Tool        `json:"tools,omitempty"`
 	TopK          *int          `json:"top_k,omitempty"`
 	TopP          *float64      `json:"top_p,omitempty"`
+}
+
+type OutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 type SystemContent struct {
@@ -40,6 +45,9 @@ type ContentList struct {
 type ContentBlock struct {
 	Type      string         `json:"type"`
 	Text      string         `json:"text,omitempty"`
+	Thinking  string         `json:"thinking,omitempty"`
+	Signature string         `json:"signature,omitempty"`
+	Data      string         `json:"data,omitempty"`
 	ID        string         `json:"id,omitempty"`
 	Name      string         `json:"name,omitempty"`
 	Input     map[string]any `json:"input,omitempty"`
@@ -128,6 +136,10 @@ func ToLangChainMessage(resp MessageResponse) lc.BaseMessage {
 			InputTokens:  resp.Usage.InputTokens,
 			OutputTokens: resp.Usage.OutputTokens,
 			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			InputTokenDetails: map[string]int{
+				"cache_creation_input_tokens": resp.Usage.CacheCreationInputTokens,
+				"cache_read_input_tokens":     resp.Usage.CacheReadInputTokens,
+			},
 		},
 		ResponseMetadata: map[string]any{
 			"model":         resp.Model,
@@ -236,13 +248,26 @@ func blockFromLC(part lc.ContentPart) ContentBlock {
 	if part.Source != nil {
 		block.Source = part.Source
 	}
+	if part.Type == "thinking" {
+		block.Thinking = part.Text
+		block.Text = ""
+	}
+	if value, ok := part.Extra["thinking"].(string); ok {
+		block.Thinking = value
+	}
+	if value, ok := part.Extra["signature"].(string); ok {
+		block.Signature = value
+	}
+	if value, ok := part.Extra["data"].(string); ok {
+		block.Data = value
+	}
 	return block
 }
 
 func partsFromAnthropic(blocks []ContentBlock) []lc.ContentPart {
 	parts := make([]lc.ContentPart, 0, len(blocks))
 	for _, block := range blocks {
-		parts = append(parts, lc.ContentPart{
+		part := lc.ContentPart{
 			Type:       block.Type,
 			Text:       block.Text,
 			ID:         block.ID,
@@ -250,7 +275,18 @@ func partsFromAnthropic(blocks []ContentBlock) []lc.ContentPart {
 			Input:      block.Input,
 			ToolCallID: block.ToolUseID,
 			Content:    block.Content,
-		})
+		}
+		switch block.Type {
+		case "thinking":
+			part.Text = block.Thinking
+			part.Extra = map[string]any{
+				"thinking":  block.Thinking,
+				"signature": block.Signature,
+			}
+		case "redacted_thinking":
+			part.Extra = map[string]any{"data": block.Data}
+		}
+		parts = append(parts, part)
 	}
 	return parts
 }

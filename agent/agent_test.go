@@ -7,6 +7,7 @@ import (
 
 	"tinychain/callbacks"
 	"tinychain/lc"
+	"tinychain/openai"
 )
 
 type fakeModel struct {
@@ -27,6 +28,18 @@ func (m *fakeModel) Call(ctx context.Context, messages []lc.BaseMessage, tools [
 		}, nil
 	}
 	return lc.AI("final answer"), nil
+}
+
+type reasoningModel struct{}
+
+func (m reasoningModel) Call(ctx context.Context, messages []lc.BaseMessage, tools []Tool) (lc.BaseMessage, error) {
+	return lc.BaseMessage{
+		Type:    lc.RoleAI,
+		Content: lc.TextContent("answer"),
+		AdditionalKwargs: map[string]any{
+			"reasoning": "visible reasoning",
+		},
+	}, nil
 }
 
 func TestAgentRunsToolLoop(t *testing.T) {
@@ -64,6 +77,24 @@ func TestAgentRunsToolLoop(t *testing.T) {
 	}
 }
 
+func TestAgentEmitsVisibleReasoningCallback(t *testing.T) {
+	var reasoning []string
+	a := New(Config{
+		Model: reasoningModel{},
+		Callbacks: callbacks.SinkFunc(func(event callbacks.Event) {
+			if event.Event == callbacks.EventLLMReasoning {
+				reasoning = append(reasoning, event.Data.Token)
+			}
+		}),
+	})
+	if _, err := a.Invoke(context.Background(), "start"); err != nil {
+		t.Fatal(err)
+	}
+	if len(reasoning) != 1 || reasoning[0] != "visible reasoning" {
+		t.Fatalf("reasoning callbacks = %#v", reasoning)
+	}
+}
+
 func containsEvent(events []callbacks.EventName, want callbacks.EventName) bool {
 	for _, event := range events {
 		if event == want {
@@ -84,5 +115,52 @@ func TestComposeSystemPromptIncludesSkillsAndMemory(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestReasoningEffortMapping(t *testing.T) {
+	if got := normalizeReasoningEffort("xhigh"); got != "high" {
+		t.Fatalf("xhigh maps to %q", got)
+	}
+	reasoning := openAIReasoning("medium")
+	obj, ok := reasoning.(map[string]any)
+	if !ok || obj["effort"] != "medium" || obj["summary"] != "auto" {
+		t.Fatalf("openai reasoning = %#v", reasoning)
+	}
+	thinking, outputConfig, maxTokens := anthropicThinking("claude-opus-4-8", "high", 1024)
+	obj, ok = thinking.(map[string]any)
+	if !ok || obj["type"] != "adaptive" || obj["display"] != "summarized" || outputConfig == nil || outputConfig.Effort != "high" || maxTokens != 1024 {
+		t.Fatalf("anthropic adaptive thinking = %#v output=%#v max=%d", thinking, outputConfig, maxTokens)
+	}
+	thinking, outputConfig, maxTokens = anthropicThinking("claude-3-7-sonnet-20250219", "high", 1024)
+	obj, ok = thinking.(map[string]any)
+	if !ok || obj["type"] != "enabled" || obj["budget_tokens"] != 8192 || obj["display"] != "summarized" || outputConfig == nil || outputConfig.Effort != "high" || maxTokens <= 8192 {
+		t.Fatalf("anthropic manual thinking = %#v output=%#v max=%d", thinking, outputConfig, maxTokens)
+	}
+}
+
+func TestOpenAIResponseReasoningSummaryIsPreserved(t *testing.T) {
+	msg := messageFromOpenAIResponse(&openai.ResponsesResponse{
+		ID:     "resp_1",
+		Model:  "gpt-test",
+		Status: "completed",
+		Output: []openai.ResponsesOutputItem{
+			{
+				ID:      "rs_1",
+				Type:    "reasoning",
+				Summary: []openai.ResponsesSummary{{Type: "summary_text", Text: "checked the constraints"}},
+			},
+			{
+				Type:    "message",
+				Content: []openai.ResponsesContent{{Type: "output_text", Text: "done"}},
+			},
+		},
+	})
+	if got := contentText(msg.Content); got != "done" {
+		t.Fatalf("content = %q", got)
+	}
+	reasoning := lc.VisibleReasoning(msg)
+	if len(reasoning) != 1 || reasoning[0] != "checked the constraints" {
+		t.Fatalf("reasoning = %#v", reasoning)
 	}
 }

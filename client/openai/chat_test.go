@@ -56,6 +56,25 @@ func TestChatMessagesTranslateImageParts(t *testing.T) {
 	}
 }
 
+func TestToLangChainMessagePreservesOpenRouterReasoning(t *testing.T) {
+	msg := ToLangChainMessage(ChatMessage{
+		Role:    "assistant",
+		Content: lc.TextContent("answer"),
+		ReasoningDetails: []any{
+			map[string]any{"type": "reasoning.summary", "summary": "checked options"},
+			map[string]any{"type": "reasoning.encrypted", "data": "opaque"},
+		},
+	})
+	reasoning := lc.VisibleReasoning(msg)
+	if len(reasoning) != 1 || reasoning[0] != "checked options" {
+		t.Fatalf("reasoning = %#v", reasoning)
+	}
+	roundTrip := ChatMessages([]lc.BaseMessage{msg})
+	if roundTrip[0].ReasoningDetails == nil {
+		t.Fatalf("reasoning details were not preserved: %#v", roundTrip[0])
+	}
+}
+
 func TestClientRetriesTransientStatus(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"tinychain/lc"
+	"github.com/Bradthebrad/tinychain/lc"
 )
 
 type Todo struct {

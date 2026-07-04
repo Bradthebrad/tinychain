@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"tinychain/lc"
+	"github.com/Bradthebrad/tinychain/lc"
 )
 
 type compactingModel struct {

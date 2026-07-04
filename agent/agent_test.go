@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"tinychain/callbacks"
-	"tinychain/lc"
-	"tinychain/openai"
+	"github.com/Bradthebrad/tinychain/callbacks"
+	"github.com/Bradthebrad/tinychain/lc"
+	"github.com/Bradthebrad/tinychain/openai"
 )
 
 type fakeModel struct {

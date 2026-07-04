@@ -2,19 +2,22 @@
 
 ![tinychain module hero](assets/tinychain-hero.svg)
 
-`tinychain` is a tiny set of Go modules for building LangChain-shaped clients, agents, skills, tools, and MCP-style tool servers without dragging a whole ecosystem into your binary.
+`tinychain` is a tiny Go module for building LangChain-shaped clients, agents, skills, tools, and MCP-style tool servers without dragging a whole ecosystem into your binary.
 
 It is intentionally boring in the best way: small structs, explicit interfaces, stdlib-first networking, and just enough agent loop to build real local apps like NullBot.
 
-## Modules
+## Packages
 
-| Module | Import path | Purpose |
+| Package | Import path | Purpose |
 | --- | --- | --- |
-| `client` | `tinychain` | LangChain-shaped message/data models, callbacks, OpenAI request/response models, Anthropic request/response models, and tiny provider clients. |
-| `agent` | `tinychain/agent` | Minimal model/tool loop with skills, memory prompt injection, todo planning, subagent task delegation, and callback events. |
-| `mcp` | `tinychain/mcp` | Minimal MCP-style JSON-RPC protocol, stdio-first server/client transport, HTTP/SSE helpers, and adapters that expose MCP tools to agents. |
+| `lc` | `github.com/Bradthebrad/tinychain/lc` | LangChain-shaped message/data models, content blocks, tool calls, generations, and helpers. |
+| `callbacks` | `github.com/Bradthebrad/tinychain/callbacks` | LangChain-like model/tool activity events. |
+| `openai` | `github.com/Bradthebrad/tinychain/openai` | OpenAI Chat Completions and Responses request/response structs plus a tiny HTTP client. |
+| `anthropic` | `github.com/Bradthebrad/tinychain/anthropic` | Anthropic Messages request/response structs plus a tiny HTTP client. |
+| `agent` | `github.com/Bradthebrad/tinychain/agent` | Minimal model/tool loop with skills, memory prompt injection, todo planning, subagent task delegation, and callback events. |
+| `mcp` | `github.com/Bradthebrad/tinychain/mcp` | Minimal MCP-style JSON-RPC protocol, stdio-first server/client transport, HTTP/SSE helpers, and adapters that expose MCP tools to agents. |
 
-Each layer has its own `go.mod`, so consumers can import only the piece they need.
+The repository is one Go module, so consumers can build from a single clone or let `go mod` pull the tagged module automatically.
 
 ## Design Goals
 
@@ -27,9 +30,9 @@ Each layer has its own `go.mod`, so consumers can import only the piece they nee
 | Skills as files | `SKILL.md` files can be loaded into the agent prompt without making skills a complex plugin system. |
 | MCP first, but minimal | Stdio is the default transport; HTTP/SSE style transports are available for servers that need them. |
 
-## Client
+## Client Packages
 
-The `client` module contains the data models and provider clients:
+The client packages contain the data models and provider clients:
 
 | Package | What it includes |
 | --- | --- |
@@ -51,7 +54,7 @@ import (
 	"context"
 	"fmt"
 
-	"tinychain/agent"
+	"github.com/Bradthebrad/tinychain/agent"
 )
 
 func main() {
@@ -111,11 +114,10 @@ This is intentionally not a full MCP kitchen sink. It is the smallest practical 
 tinychain/
   assets/
     tinychain-hero.svg
-  client/
-    anthropic/
-    callbacks/
-    lc/
-    openai/
+  anthropic/
+  callbacks/
+  lc/
+  openai/
   agent/
   examples/
     openai_example_agent/
@@ -124,7 +126,7 @@ tinychain/
 
 ## Tiny OpenAI Example Agent
 
-The repo includes a baby-sized CLI REPL example that uses the `agent` and `client` modules directly:
+The repo includes a baby-sized CLI REPL example that uses the `agent` and client packages directly:
 
 ```powershell
 cd examples/openai_example_agent
@@ -158,16 +160,9 @@ go build -trimpath -ldflags "-s -w" -o ..\..\openai_example_chat.exe .
 
 ## Tests
 
-Run module tests individually:
+Run all tests from the repository root:
 
 ```powershell
-cd client
-go test ./...
-
-cd ../agent
-go test ./...
-
-cd ../mcp
 go test ./...
 ```
 

@@ -3,7 +3,7 @@ package openai
 import (
 	"encoding/json"
 
-	"tinychain/lc"
+	"github.com/Bradthebrad/tinychain/lc"
 )
 
 type ChatCompletionRequest struct {

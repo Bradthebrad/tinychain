@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	"tinychain/agent"
-	"tinychain/lc"
+	"github.com/Bradthebrad/tinychain/agent"
+	"github.com/Bradthebrad/tinychain/lc"
 )
 
 func AgentTools(ctx context.Context, client *Client) ([]agent.Tool, error) {

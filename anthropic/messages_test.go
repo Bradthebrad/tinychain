@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"tinychain/lc"
+	"github.com/Bradthebrad/tinychain/lc"
 )
 
 func TestMessagesSeparateSystemAndToolResult(t *testing.T) {

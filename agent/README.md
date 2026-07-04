@@ -1,7 +1,7 @@
-# tinychain/agent
+# github.com/Bradthebrad/tinychain/agent
 
-`tinychain/agent` is a tiny LangChain/deep-agents-inspired harness built on the
-local `tinychain` client module.
+`github.com/Bradthebrad/tinychain/agent` is a tiny LangChain/deep-agents-inspired harness built on the
+client packages in `github.com/Bradthebrad/tinychain`.
 
 It keeps only the small core:
 
@@ -26,9 +26,9 @@ import (
 	"os"
 	"strings"
 
-	"tinychain/agent"
-	"tinychain/lc"
-	"tinychain/openai"
+	"github.com/Bradthebrad/tinychain/agent"
+	"github.com/Bradthebrad/tinychain/lc"
+	"github.com/Bradthebrad/tinychain/openai"
 )
 
 func main() {

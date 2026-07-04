@@ -5,9 +5,9 @@ import (
 	"errors"
 	"strings"
 
-	"tinychain/anthropic"
-	"tinychain/lc"
-	"tinychain/openai"
+	"github.com/Bradthebrad/tinychain/anthropic"
+	"github.com/Bradthebrad/tinychain/lc"
+	"github.com/Bradthebrad/tinychain/openai"
 )
 
 type Model interface {

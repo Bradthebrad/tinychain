@@ -51,7 +51,7 @@
   </g>
   <g transform="translate(95 430)" font-family="Consolas, 'Courier New', monospace" font-size="22">
     <rect width="1090" height="46" rx="12" fill="#102a2a" stroke="#2e7d78"/>
-    <text x="24" y="31" fill="#9dd9d2">import tinychain/agent</text>
+    <text x="24" y="31" fill="#9dd9d2">import github.com/Bradthebrad/tinychain/agent</text>
     <text x="370" y="31" fill="#d9b44a">tiny binaries</text>
     <text x="610" y="31" fill="#ffd300">minimal surface area</text>
     <text x="910" y="31" fill="#9dd9d2">stdlib-heavy</text>

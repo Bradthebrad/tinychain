@@ -1,6 +1,6 @@
 package openai
 
-import "tinychain/lc"
+import "github.com/Bradthebrad/tinychain/lc"
 
 type ResponsesRequest struct {
 	Model              string          `json:"model"`

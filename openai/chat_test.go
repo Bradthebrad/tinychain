@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"tinychain/lc"
+	"github.com/Bradthebrad/tinychain/lc"
 )
 
 func TestChatMessagesConvertLangChainRolesAndToolCalls(t *testing.T) {

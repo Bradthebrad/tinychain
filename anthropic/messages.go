@@ -1,6 +1,6 @@
 package anthropic
 
-import "tinychain/lc"
+import "github.com/Bradthebrad/tinychain/lc"
 
 type MessageRequest struct {
 	Model         string        `json:"model"`

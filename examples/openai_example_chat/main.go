@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"tinychain/lc"
-	"tinychain/openai"
+	"github.com/Bradthebrad/tinychain/lc"
+	"github.com/Bradthebrad/tinychain/openai"
 )
 
 const defaultModel = "gpt-4o-mini"

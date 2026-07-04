@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"tinychain/callbacks"
-	"tinychain/lc"
+	"github.com/Bradthebrad/tinychain/callbacks"
+	"github.com/Bradthebrad/tinychain/lc"
 )
 
 const DefaultMaxIterations = 20

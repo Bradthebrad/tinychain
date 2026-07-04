@@ -1,6 +1,6 @@
-# tinychain/mcp
+# github.com/Bradthebrad/tinychain/mcp
 
-`tinychain/mcp` is a tiny, stdlib-only MCP-style tool server/client module.
+`github.com/Bradthebrad/tinychain/mcp` is a tiny, stdlib-only MCP-style tool server/client module.
 
 It supports the minimal methods needed for agent tooling:
 
@@ -22,7 +22,7 @@ import (
 	"context"
 	"strings"
 
-	"tinychain/mcp"
+	"github.com/Bradthebrad/tinychain/mcp"
 )
 
 func main() {

@@ -8,8 +8,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"tinychain/callbacks"
-	"tinychain/lc"
+	"github.com/Bradthebrad/tinychain/callbacks"
+	"github.com/Bradthebrad/tinychain/lc"
 )
 
 type ContextPolicy struct {

@@ -3,7 +3,7 @@ package callbacks
 import (
 	"time"
 
-	"tinychain/lc"
+	"github.com/Bradthebrad/tinychain/lc"
 )
 
 type EventName string

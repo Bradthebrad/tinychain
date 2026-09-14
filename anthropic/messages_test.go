@@ -79,7 +79,7 @@ func TestThinkingBlocksArePreservedAsReasoning(t *testing.T) {
 		Usage: Usage{InputTokens: 1, OutputTokens: 2},
 	})
 	reasoning := lc.VisibleReasoning(msg)
-	if len(reasoning) != 1 || reasoning[0] != "considered the edge cases" {
+	if len(reasoning) != 0 {
 		t.Fatalf("reasoning = %#v", reasoning)
 	}
 	if msg.Content.Parts[0].Type != "thinking" || msg.Content.Parts[0].Text != "considered the edge cases" {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Bradthebrad/tinychain/streaming"
 	"io"
 	"net/http"
 	"strconv"
@@ -25,6 +26,9 @@ type Client struct {
 }
 
 func (c Client) Messages(ctx context.Context, req MessageRequest) (*MessageResponse, error) {
+	if streaming.Enabled(ctx) {
+		return c.messagesStream(ctx, req)
+	}
 	var out MessageResponse
 	if err := c.post(ctx, "/messages", req, &out); err != nil {
 		return nil, err

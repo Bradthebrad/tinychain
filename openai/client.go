@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Bradthebrad/tinychain/streaming"
 	"io"
 	"net/http"
 	"strconv"
@@ -21,6 +22,9 @@ type Client struct {
 }
 
 func (c Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error) {
+	if streaming.Enabled(ctx) {
+		return c.chatStream(ctx, req)
+	}
 	var out ChatCompletionResponse
 	if err := c.post(ctx, "/chat/completions", req, &out); err != nil {
 		return nil, err
@@ -29,6 +33,9 @@ func (c Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) (
 }
 
 func (c Client) Responses(ctx context.Context, req ResponsesRequest) (*ResponsesResponse, error) {
+	if streaming.Enabled(ctx) {
+		return c.responsesStream(ctx, req)
+	}
 	var out ResponsesResponse
 	if err := c.post(ctx, "/responses", req, &out); err != nil {
 		return nil, err

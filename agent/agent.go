@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"github.com/Bradthebrad/tinychain/streaming"
 	"time"
 
 	"github.com/Bradthebrad/tinychain/callbacks"
@@ -12,6 +13,7 @@ import (
 const DefaultMaxIterations = 20
 
 type Config struct {
+	Name          string
 	Model         Model
 	SystemPrompt  string
 	Tools         []Tool
@@ -24,6 +26,7 @@ type Config struct {
 }
 
 type Agent struct {
+	name          string
 	model         Model
 	systemPrompt  string
 	tools         map[string]Tool
@@ -43,6 +46,7 @@ type Result struct {
 
 func New(config Config) *Agent {
 	a := &Agent{
+		name:          config.Name,
 		model:         config.Model,
 		systemPrompt:  config.SystemPrompt,
 		tools:         map[string]Tool{},
@@ -81,22 +85,48 @@ func (a *Agent) Invoke(ctx context.Context, input string) (*Result, error) {
 }
 
 func (a *Agent) InvokeMessages(ctx context.Context, input []lc.BaseMessage) (*Result, error) {
+	return a.invokeMessages(ctx, input, nil)
+}
+
+func (a *Agent) invokeMessages(ctx context.Context, input []lc.BaseMessage, inbox *InstructionInbox) (*Result, error) {
+	defer inbox.Close()
 	if a.model == nil {
 		return nil, fmt.Errorf("agent: model is required")
 	}
 	messages := append([]lc.BaseMessage{}, a.systemMessages()...)
 	messages = append(messages, input...)
-	runID := "agent"
+	a, ctx, runID := a.scopedRun(ctx)
 	for step := 0; step < a.maxIterations; step++ {
+		if err := ctx.Err(); err != nil {
+			if a.callbacks != nil {
+				a.callbacks.Handle(callbacks.Error(callbacks.EventLLMError, runID, err))
+			}
+			return nil, err
+		}
+		for _, in := range inbox.take(false) {
+			messages = append(messages, in.message())
+		}
 		compactedForRetry := false
 		var msg lc.BaseMessage
 		var err error
+		summaryStreamed := false
 		for {
 			messages = a.compactIfNeeded(ctx, messages, runID, false)
 			if a.callbacks != nil {
 				a.callbacks.Handle(callbacks.ChatModelStart("agent", runID, [][]lc.BaseMessage{messages}))
 			}
-			msg, err = a.model.Call(ctx, messages, a.toolOrder)
+			modelCtx := ctx
+			if a.callbacks != nil {
+				modelCtx = streaming.WithSink(ctx, func(delta streaming.Delta) {
+					event := callbacks.LLMNewToken(runID, delta.Text)
+					if delta.Summary {
+						summaryStreamed = true
+						event = callbacks.LLMReasoning(runID, delta.Text)
+					}
+					a.callbacks.Handle(event)
+				})
+			}
+			msg, err = a.model.Call(modelCtx, messages, a.toolOrder)
 			if err != nil && !compactedForRetry && a.shouldCompactAfterError(err) {
 				next := a.compactIfNeeded(ctx, messages, runID, true)
 				if EstimateTokens(next) < EstimateTokens(messages) {
@@ -114,8 +144,23 @@ func (a *Agent) InvokeMessages(ctx context.Context, input []lc.BaseMessage) (*Re
 			return nil, err
 		}
 		messages = append(messages, msg)
-		a.emitReasoning(runID, msg)
+		if !summaryStreamed {
+			a.emitReasoning(runID, msg)
+		}
 		if len(msg.ToolCalls) == 0 {
+			// Seal acceptance atomically with deciding this response is final.
+			var instructions []Instruction
+			if step+1 < a.maxIterations {
+				instructions = inbox.take(true)
+			} else {
+				inbox.Close()
+			}
+			if len(instructions) > 0 {
+				for _, in := range instructions {
+					messages = append(messages, in.message())
+				}
+				continue
+			}
 			result := &Result{Messages: messages, Output: msg, Steps: step + 1}
 			if a.callbacks != nil {
 				a.callbacks.Handle(callbacks.LLMEnd(runID, lc.LLMResult{
@@ -124,12 +169,19 @@ func (a *Agent) InvokeMessages(ctx context.Context, input []lc.BaseMessage) (*Re
 			}
 			return result, nil
 		}
+		if text := contentText(msg.Content); a.callbacks != nil && text != "" {
+			a.callbacks.Handle(callbacks.Event{Event: callbacks.EventLLMCommentary, RunID: runID, Data: callbacks.EventData{Token: text}})
+		}
 		for _, call := range msg.ToolCalls {
 			toolMsg := a.executeTool(ctx, call, messages)
 			messages = append(messages, toolMsg)
 		}
 	}
-	return nil, fmt.Errorf("agent: stopped after %d iterations with pending tool calls", a.maxIterations)
+	err := fmt.Errorf("agent: stopped after %d iterations with pending tool calls", a.maxIterations)
+	if a.callbacks != nil {
+		a.callbacks.Handle(callbacks.Error(callbacks.EventLLMError, runID, err))
+	}
+	return nil, err
 }
 
 func (a *Agent) emitReasoning(runID string, msg lc.BaseMessage) {

@@ -15,7 +15,7 @@ func TestVisibleReasoningExtractsProviderFields(t *testing.T) {
 		},
 	}
 	got := VisibleReasoning(msg)
-	if len(got) != 3 {
+	if len(got) != 1 || got[0] != "summarized path" {
 		t.Fatalf("reasoning = %#v", got)
 	}
 	for _, forbidden := range got {

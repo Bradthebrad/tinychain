@@ -37,7 +37,7 @@ func (m reasoningModel) Call(ctx context.Context, messages []lc.BaseMessage, too
 		Type:    lc.RoleAI,
 		Content: lc.TextContent("answer"),
 		AdditionalKwargs: map[string]any{
-			"reasoning": "visible reasoning",
+			"reasoning_summaries": []string{"visible reasoning"},
 		},
 	}, nil
 }

@@ -12,6 +12,7 @@ const (
 	EventChatModelStart EventName = "on_chat_model_start"
 	EventLLMStart       EventName = "on_llm_start"
 	EventLLMNewToken    EventName = "on_llm_new_token"
+	EventLLMCommentary  EventName = "on_llm_commentary"
 	EventLLMReasoning   EventName = "on_llm_reasoning"
 	EventLLMEnd         EventName = "on_llm_end"
 	EventLLMError       EventName = "on_llm_error"
@@ -27,6 +28,7 @@ const (
 )
 
 type Event struct {
+	AgentID     string         `json:"agent_id,omitempty"`
 	Event       EventName      `json:"event"`
 	Name        string         `json:"name,omitempty"`
 	RunID       string         `json:"run_id,omitempty"`

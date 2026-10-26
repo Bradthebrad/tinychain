@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/Bradthebrad/tinychain/streaming"
+	"strings"
 	"time"
 
 	"github.com/Bradthebrad/tinychain/callbacks"
@@ -23,7 +25,25 @@ type Config struct {
 	MaxIterations int
 	Callbacks     callbacks.Sink
 	Context       ContextPolicy
+	// Gate, when set, is consulted before every model call and every tool
+	// call. It can hold a run (pause), let it go on, or ask it to wrap up.
+	Gate StepGate
 }
+
+// StepGate lets a host control a run between steps. Wait returns nil to go
+// on, ErrWrapUp to finish now with a short summary instead of starting new
+// work, or any other error to end the run with that error. Wait may block,
+// which pauses the run; it should return when ctx is done.
+type StepGate interface {
+	Wait(ctx context.Context) error
+}
+
+// ErrWrapUp asks a run to stop gracefully: no new tool calls, one last
+// model call that says what was done and what is left.
+var ErrWrapUp = errors.New("agent: stop requested")
+
+// wrapUpPrompt is what the model is told when it is asked to stop.
+const wrapUpPrompt = "The person asked you to stop now. Don't call any tools and don't start anything new. In a few sentences, say what you did, what you found, and what is left undone."
 
 type Agent struct {
 	name          string
@@ -36,6 +56,7 @@ type Agent struct {
 	maxIterations int
 	callbacks     callbacks.Sink
 	context       ContextPolicy
+	gate          StepGate
 	// meter measures context use for one run; scopedRun copies the agent,
 	// so each run has its own.
 	meter *contextMeter
@@ -58,6 +79,7 @@ func New(config Config) *Agent {
 		maxIterations: config.MaxIterations,
 		callbacks:     config.Callbacks,
 		context:       normalizeContextPolicy(config.Context),
+		gate:          config.Gate,
 	}
 	if a.maxIterations == 0 {
 		a.maxIterations = DefaultMaxIterations
@@ -107,49 +129,15 @@ func (a *Agent) invokeMessages(ctx context.Context, input []lc.BaseMessage, inbo
 			}
 			return nil, err
 		}
+		if err := a.waitGate(ctx); err != nil {
+			return a.stopAtGate(ctx, messages, runID, step, err)
+		}
 		for _, in := range inbox.take(false) {
 			messages = append(messages, in.message())
 		}
-		compactedForRetry := false
 		var msg lc.BaseMessage
 		var err error
-		summaryStreamed := false
-		for {
-			messages = a.fitContext(ctx, messages, runID, false)
-			sentRaw := a.meter.raw(messages)
-			if a.callbacks != nil {
-				event := callbacks.ChatModelStart("agent", runID, [][]lc.BaseMessage{messages})
-				if a.context.Enabled || a.context.MaxTokens > 0 {
-					event.Data.Extra = a.meter.snapshot(a.meter.scaled(sentRaw))
-				}
-				a.callbacks.Handle(event)
-			}
-			modelCtx := ctx
-			if a.callbacks != nil {
-				modelCtx = streaming.WithSink(ctx, func(delta streaming.Delta) {
-					event := callbacks.LLMNewToken(runID, delta.Text)
-					if delta.Summary {
-						summaryStreamed = true
-						event = callbacks.LLMReasoning(runID, delta.Text)
-					}
-					a.callbacks.Handle(event)
-				})
-			}
-			msg, err = a.model.Call(modelCtx, messages, a.toolOrder)
-			if err == nil {
-				a.meter.observe(sentRaw, msg)
-			}
-			if err != nil && !compactedForRetry && a.shouldCompactAfterError(err) {
-				a.meter.learnLimit(err)
-				next := a.fitContext(ctx, messages, runID, true)
-				if a.meter.estimate(next) < a.meter.estimate(messages) {
-					messages = next
-					compactedForRetry = true
-					continue
-				}
-			}
-			break
-		}
+		messages, msg, err = a.callModel(ctx, messages, runID, a.toolOrder)
 		if err != nil {
 			if a.callbacks != nil {
 				a.callbacks.Handle(callbacks.Error(callbacks.EventLLMError, runID, err))
@@ -157,9 +145,6 @@ func (a *Agent) invokeMessages(ctx context.Context, input []lc.BaseMessage, inbo
 			return nil, err
 		}
 		messages = append(messages, msg)
-		if !summaryStreamed {
-			a.emitReasoning(runID, msg)
-		}
 		if len(msg.ToolCalls) == 0 {
 			// Seal acceptance atomically with deciding this response is final.
 			var instructions []Instruction
@@ -174,18 +159,19 @@ func (a *Agent) invokeMessages(ctx context.Context, input []lc.BaseMessage, inbo
 				}
 				continue
 			}
-			result := &Result{Messages: messages, Output: msg, Steps: step + 1}
-			if a.callbacks != nil {
-				a.callbacks.Handle(callbacks.LLMEnd(runID, lc.LLMResult{
-					Generations: [][]lc.ChatGeneration{{{Message: msg}}},
-				}))
-			}
-			return result, nil
+			return a.finish(runID, messages, msg, step+1), nil
 		}
 		if text := contentText(msg.Content); a.callbacks != nil && text != "" {
 			a.callbacks.Handle(callbacks.Event{Event: callbacks.EventLLMCommentary, RunID: runID, Data: callbacks.EventData{Token: text}})
 		}
-		for _, call := range msg.ToolCalls {
+		for i, call := range msg.ToolCalls {
+			if err := a.waitGate(ctx); err != nil {
+				// Every requested call needs a result, even the ones not run.
+				for _, skipped := range msg.ToolCalls[i:] {
+					messages = append(messages, lc.BaseMessage{Type: lc.RoleTool, ToolCallID: skipped.ID, Content: lc.TextContent("Not run: the run was stopped before this call."), Status: "error"})
+				}
+				return a.stopAtGate(ctx, messages, runID, step+1, err)
+			}
 			toolMsg := a.executeTool(ctx, call, messages)
 			messages = append(messages, toolMsg)
 		}
@@ -195,6 +181,106 @@ func (a *Agent) invokeMessages(ctx context.Context, input []lc.BaseMessage, inbo
 		a.callbacks.Handle(callbacks.Error(callbacks.EventLLMError, runID, err))
 	}
 	return nil, err
+}
+
+// callModel fits the context, calls the model with streaming callbacks,
+// and retries once after compacting when the provider says the request is
+// too long. It returns the messages as sent and the reply.
+func (a *Agent) callModel(ctx context.Context, messages []lc.BaseMessage, runID string, tools []Tool) ([]lc.BaseMessage, lc.BaseMessage, error) {
+	compactedForRetry := false
+	for {
+		messages = a.fitContext(ctx, messages, runID, false)
+		sentRaw := a.meter.raw(messages)
+		if a.callbacks != nil {
+			event := callbacks.ChatModelStart("agent", runID, [][]lc.BaseMessage{messages})
+			if a.context.Enabled || a.context.MaxTokens > 0 {
+				event.Data.Extra = a.meter.snapshot(a.meter.scaled(sentRaw))
+			}
+			a.callbacks.Handle(event)
+		}
+		summaryStreamed := false
+		modelCtx := ctx
+		if a.callbacks != nil {
+			modelCtx = streaming.WithSink(ctx, func(delta streaming.Delta) {
+				event := callbacks.LLMNewToken(runID, delta.Text)
+				if delta.Summary {
+					summaryStreamed = true
+					event = callbacks.LLMReasoning(runID, delta.Text)
+				}
+				a.callbacks.Handle(event)
+			})
+		}
+		msg, err := a.model.Call(modelCtx, messages, tools)
+		if err == nil {
+			a.meter.observe(sentRaw, msg)
+			if !summaryStreamed {
+				a.emitReasoning(runID, msg)
+			}
+			return messages, msg, nil
+		}
+		if !compactedForRetry && a.shouldCompactAfterError(err) {
+			a.meter.learnLimit(err)
+			next := a.fitContext(ctx, messages, runID, true)
+			if a.meter.estimate(next) < a.meter.estimate(messages) {
+				messages = next
+				compactedForRetry = true
+				continue
+			}
+		}
+		return messages, lc.BaseMessage{}, err
+	}
+}
+
+func (a *Agent) finish(runID string, messages []lc.BaseMessage, msg lc.BaseMessage, steps int) *Result {
+	if a.callbacks != nil {
+		a.callbacks.Handle(callbacks.LLMEnd(runID, lc.LLMResult{
+			Generations: [][]lc.ChatGeneration{{{Message: msg}}},
+		}))
+	}
+	return &Result{Messages: messages, Output: msg, Steps: steps}
+}
+
+func (a *Agent) waitGate(ctx context.Context) error {
+	if a.gate == nil {
+		return nil
+	}
+	return a.gate.Wait(ctx)
+}
+
+// stopAtGate ends a run the gate stopped. ErrWrapUp gets one last model
+// call, without running any tools, that reports what was done.
+func (a *Agent) stopAtGate(ctx context.Context, messages []lc.BaseMessage, runID string, steps int, err error) (*Result, error) {
+	if !errors.Is(err, ErrWrapUp) {
+		if a.callbacks != nil {
+			a.callbacks.Handle(callbacks.Error(callbacks.EventLLMError, runID, err))
+		}
+		return nil, err
+	}
+	messages = append(messages, lc.Human(wrapUpPrompt))
+	// Tools stay defined: some providers reject a history with tool calls
+	// when none are. Any the model asks for anyway are dropped.
+	messages, msg, callErr := a.callModel(ctx, messages, runID, a.toolOrder)
+	if callErr != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		msg = lc.AI("Stopped at your request.")
+	}
+	msg.ToolCalls = nil
+	if len(msg.Content.Parts) > 0 {
+		kept := msg.Content.Parts[:0:0]
+		for _, part := range msg.Content.Parts {
+			if part.Type != "tool_use" {
+				kept = append(kept, part)
+			}
+		}
+		msg.Content.Parts = kept
+	}
+	if strings.TrimSpace(contentText(msg.Content)) == "" {
+		msg = lc.AI("Stopped at your request.")
+	}
+	messages = append(messages, msg)
+	return a.finish(runID, messages, msg, steps), nil
 }
 
 func (a *Agent) emitReasoning(runID string, msg lc.BaseMessage) {

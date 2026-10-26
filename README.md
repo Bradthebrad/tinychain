@@ -93,6 +93,7 @@ Agent features include:
 | Memory | Injects compact memory snippets into the system prompt. |
 | Subagents | Adds a task tool when subagents are configured, so a supervising agent can delegate focused work. |
 | Callbacks | Emits model/tool start, end, and error events suitable for live UIs and logs. |
+| Run control | `Config.Gate` is consulted before every model call and tool call. It can hold the run (pause), let it go on, or return `ErrWrapUp`: the run then makes no more tool calls, gives every requested call a result, and ends with one model reply saying what was done and what is left. Cancel the context to stop at once. |
 | Context management | Measures context use before every model call, counting tool definitions and rescaling by the input tokens the provider reports. Shortens tool results the model has seen from 60% of the window, summarizes older messages from 85%, and cuts any tool result that wouldn't fit to a preview with its size. See below. |
 
 ## Context management

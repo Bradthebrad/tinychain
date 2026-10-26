@@ -118,7 +118,7 @@ reported for the previous request (cache reads and writes included).
 | --- | --- | --- |
 | Shorten | Usage at `SoftRatio` or more, or `MaxMessages` reached | Tool results the model has already seen become a digest: the tool, its arguments, the size of the output and its first `ToolDigestChars` characters. Long string arguments of earlier tool calls are cut to `ToolArgChars`. Oldest first, until usage is three quarters of `SoftRatio`. No model call. |
 | Summarize | Still at `HardRatio` or more | Older messages are replaced by a model-written summary. About `RecentRatio` of the window stays word for word. Skill results and the request being worked on are carried over word for word in their own message, and a later summary folds the earlier one in. |
-| Guard | Every tool result, as it arrives | A result larger than the room left (counting what shortening could free), or than half the window, is cut to a preview with a notice giving its size and suggesting a smaller read. |
+| Guard | Every tool result, as it arrives, whenever `MaxTokens` is set (even with `Enabled` off) | A result larger than the room left (counting what shortening could free), or than half the window, is cut to a preview with a notice giving its size and suggesting a smaller read. |
 
 A context-length error triggers both tiers and one retry. When the error names
 the real window ("maximum context length is 128000 tokens"), the agent uses

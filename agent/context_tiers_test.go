@@ -322,14 +322,14 @@ func TestCompactSummarizesEverythingOnRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if model.summaries != 1 || report.Summarized != 4 || len(next) != 3 {
+	if model.summaries != 1 || report.Summarized != 4 || len(next) != 2 {
 		t.Fatalf("summaries=%d report=%+v next=%d", model.summaries, report, len(next))
 	}
 	if contentText(next[0].Content) != "system prompt" {
 		t.Fatal("system prompt not kept first")
 	}
-	text := contentText(next[1].Content) + contentText(next[2].Content)
-	for _, want := range []string{summaryMarker, "SUMMARY", "second request", "history_search"} {
+	text := contentText(next[1].Content)
+	for _, want := range []string{summaryMarker, "SUMMARY", "history_search"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("summary missing %q: %q", want, text)
 		}

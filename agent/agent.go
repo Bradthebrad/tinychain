@@ -119,7 +119,7 @@ func (a *Agent) invokeMessages(ctx context.Context, input []lc.BaseMessage, inbo
 			sentRaw := a.meter.raw(messages)
 			if a.callbacks != nil {
 				event := callbacks.ChatModelStart("agent", runID, [][]lc.BaseMessage{messages})
-				if a.context.Enabled {
+				if a.context.Enabled || a.context.MaxTokens > 0 {
 					event.Data.Extra = a.meter.snapshot(a.meter.scaled(sentRaw))
 				}
 				a.callbacks.Handle(event)

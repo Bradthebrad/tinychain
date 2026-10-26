@@ -16,9 +16,10 @@ package agent
 //     replaced by the summary. Recent messages, about RecentRatio of the
 //     window, stay word for word, and so does the request being worked on.
 //
-// Every tool result is also measured as it arrives. One that wouldn't fit in
-// the room left is cut to a preview with a notice giving its size, so the
-// model can read it in smaller pieces instead of overflowing the window.
+// Every tool result is also measured as it arrives, whenever the window is
+// known, even with compaction turned off. One that wouldn't fit in the room
+// left is cut to a preview with a notice giving its size, so the model can
+// read it in smaller pieces instead of overflowing the window.
 //
 // Estimates count messages and tool definitions at about four characters per
 // token, then follow what the provider reports: each reply's input token count
@@ -284,7 +285,7 @@ func (a *Agent) fitContext(ctx context.Context, messages []lc.BaseMessage, runID
 		if m.limit > 0 {
 			budget = int(float64(m.limit) * a.context.RecentRatio)
 		}
-		next, report, err := a.summarizeOlder(ctx, messages, runID, current, budget, "", force)
+		next, report, err := a.summarizeOlder(ctx, messages, runID, current, budget, "", force, true)
 		if err != nil {
 			if a.callbacks != nil {
 				a.callbacks.Handle(callbacks.Error(callbacks.EventChainError, runID, err))
@@ -469,7 +470,7 @@ func compactArgs(args map[string]any, limit int) string {
 // summarizeOlder replaces older messages with a model-written summary,
 // keeping about recentBudget tokens of recent messages word for word. A
 // negative budget keeps KeepLastMessages messages; zero keeps none.
-func (a *Agent) summarizeOlder(ctx context.Context, messages []lc.BaseMessage, runID string, estimated, recentBudget int, focus string, force bool) ([]lc.BaseMessage, CompactionReport, error) {
+func (a *Agent) summarizeOlder(ctx context.Context, messages []lc.BaseMessage, runID string, estimated, recentBudget int, focus string, force, keepRequest bool) ([]lc.BaseMessage, CompactionReport, error) {
 	report := CompactionReport{BeforeTokens: estimated, AfterTokens: estimated}
 	policy := a.context
 	first := firstNonSystemMessage(messages)
@@ -502,11 +503,11 @@ func (a *Agent) summarizeOlder(ctx context.Context, messages []lc.BaseMessage, r
 		})
 	}
 
-	summary := a.modelSummary(ctx, old, firstNonEmpty(focus, policy.Focus))
+	summary, usage := a.modelSummary(ctx, old, firstNonEmpty(focus, policy.Focus))
 	if strings.TrimSpace(summary) == "" {
 		summary = deterministicSummary(old, policy)
 	}
-	kept := keptText(old, recent, policy)
+	kept := keptText(old, recent, policy, keepRequest)
 	build := func(summary string) []lc.BaseMessage {
 		next := make([]lc.BaseMessage, 0, len(prefix)+2+len(recent))
 		next = append(next, prefix...)
@@ -531,6 +532,9 @@ func (a *Agent) summarizeOlder(ctx context.Context, messages []lc.BaseMessage, r
 		data["before_tokens"] = estimated
 		data["after_tokens"] = report.AfterTokens
 		data["summarized"] = len(old)
+		if usage != nil {
+			data["summary_usage"] = usage
+		}
 		a.callbacks.Handle(callbacks.Event{
 			Event: callbacks.EventChainEnd,
 			Name:  "context_compaction",
@@ -577,9 +581,9 @@ const keptMarker = "Kept word for word from earlier in this conversation."
 // keptText carries skill text and the request being worked on out of the
 // messages being summarized, because a summary of instructions is not the
 // instructions.
-func keptText(old, recent []lc.BaseMessage, policy ContextPolicy) string {
+func keptText(old, recent []lc.BaseMessage, policy ContextPolicy, keepRequest bool) string {
 	var sections []string
-	if lastIndexOfRole(recent, lc.RoleHuman) < 0 {
+	if keepRequest && lastIndexOfRole(recent, lc.RoleHuman) < 0 {
 		if i := lastIndexOfRole(old, lc.RoleHuman); i >= 0 {
 			sections = append(sections, "The request being worked on:\n"+truncateRunes(contentText(old[i].Content), 8000))
 		}
@@ -667,10 +671,12 @@ func compactionBoundary(messages []lc.BaseMessage, keep int) int {
 	return keepToolPairs(messages, start, first)
 }
 
-func (a *Agent) modelSummary(ctx context.Context, messages []lc.BaseMessage, focus string) string {
+// modelSummary asks the model for a summary. It also returns what the call
+// used, so callers can account for it.
+func (a *Agent) modelSummary(ctx context.Context, messages []lc.BaseMessage, focus string) (string, *lc.UsageMetadata) {
 	transcript := formatMessagesForCompaction(messages, a.context)
 	if strings.TrimSpace(transcript) == "" {
-		return ""
+		return "", nil
 	}
 	system := strings.Join([]string{
 		"You compact agent conversation state.",
@@ -685,9 +691,9 @@ func (a *Agent) modelSummary(ctx context.Context, messages []lc.BaseMessage, foc
 	prompt := "Compact these older messages and tool results into a concise state summary.\n\n" + transcript
 	msg, err := a.model.Call(ctx, []lc.BaseMessage{lc.System(system), lc.Human(prompt)}, nil)
 	if err != nil {
-		return ""
+		return "", nil
 	}
-	return strings.TrimSpace(contentText(msg.Content))
+	return strings.TrimSpace(contentText(msg.Content)), msg.UsageMetadata
 }
 
 // CompactionReport describes one compaction.
@@ -711,8 +717,9 @@ type CompactOptions struct {
 
 // Compact runs the same passes the agent runs before a model call, but now
 // and regardless of usage: every tool result already seen is shortened, then
-// older messages are summarized. Leading system messages are kept. Use it for
-// a compaction someone asks for.
+// older messages are summarized. Leading system messages are kept, and so is
+// skill text. Use it for a compaction someone asks for between requests; the
+// summary is the last message of the result.
 func (a *Agent) Compact(ctx context.Context, messages []lc.BaseMessage, options CompactOptions) ([]lc.BaseMessage, CompactionReport, error) {
 	if a.model == nil {
 		return messages, CompactionReport{}, fmt.Errorf("agent: model is required")
@@ -724,7 +731,7 @@ func (a *Agent) Compact(ctx context.Context, messages []lc.BaseMessage, options 
 	if shortened > 0 {
 		local.emitContext(runID, "context_shorten", before, local.meter.estimate(next), map[string]any{"shortened": shortened, "force": true})
 	}
-	summarized, report, err := local.summarizeOlder(ctx, next, runID, local.meter.estimate(next), maxInt(0, options.KeepRecentTokens), options.Focus, true)
+	summarized, report, err := local.summarizeOlder(ctx, next, runID, local.meter.estimate(next), maxInt(0, options.KeepRecentTokens), options.Focus, true, false)
 	report.BeforeTokens = before
 	report.Shortened = shortened
 	report.Window = local.meter.limit
@@ -757,7 +764,7 @@ func (a *Agent) shouldCompactAfterError(err error) bool {
 // cut anything, what it measured.
 func (a *Agent) guardToolOutput(messages []lc.BaseMessage, output string) (string, map[string]any) {
 	m := a.meter
-	if !a.context.Enabled || m == nil || m.limit <= 0 || output == "" {
+	if m == nil || m.limit <= 0 || output == "" {
 		return output, nil
 	}
 	size := m.scaled(EstimateTextTokens(output))

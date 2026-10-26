@@ -36,6 +36,9 @@ type Agent struct {
 	maxIterations int
 	callbacks     callbacks.Sink
 	context       ContextPolicy
+	// meter measures context use for one run; scopedRun copies the agent,
+	// so each run has its own.
+	meter *contextMeter
 }
 
 type Result struct {
@@ -96,6 +99,7 @@ func (a *Agent) invokeMessages(ctx context.Context, input []lc.BaseMessage, inbo
 	messages := append([]lc.BaseMessage{}, a.systemMessages()...)
 	messages = append(messages, input...)
 	a, ctx, runID := a.scopedRun(ctx)
+	a.meter = newContextMeter(a.context, a.toolOrder)
 	for step := 0; step < a.maxIterations; step++ {
 		if err := ctx.Err(); err != nil {
 			if a.callbacks != nil {
@@ -111,9 +115,14 @@ func (a *Agent) invokeMessages(ctx context.Context, input []lc.BaseMessage, inbo
 		var err error
 		summaryStreamed := false
 		for {
-			messages = a.compactIfNeeded(ctx, messages, runID, false)
+			messages = a.fitContext(ctx, messages, runID, false)
+			sentRaw := a.meter.raw(messages)
 			if a.callbacks != nil {
-				a.callbacks.Handle(callbacks.ChatModelStart("agent", runID, [][]lc.BaseMessage{messages}))
+				event := callbacks.ChatModelStart("agent", runID, [][]lc.BaseMessage{messages})
+				if a.context.Enabled {
+					event.Data.Extra = a.meter.snapshot(a.meter.scaled(sentRaw))
+				}
+				a.callbacks.Handle(event)
 			}
 			modelCtx := ctx
 			if a.callbacks != nil {
@@ -127,9 +136,13 @@ func (a *Agent) invokeMessages(ctx context.Context, input []lc.BaseMessage, inbo
 				})
 			}
 			msg, err = a.model.Call(modelCtx, messages, a.toolOrder)
+			if err == nil {
+				a.meter.observe(sentRaw, msg)
+			}
 			if err != nil && !compactedForRetry && a.shouldCompactAfterError(err) {
-				next := a.compactIfNeeded(ctx, messages, runID, true)
-				if EstimateTokens(next) < EstimateTokens(messages) {
+				a.meter.learnLimit(err)
+				next := a.fitContext(ctx, messages, runID, true)
+				if a.meter.estimate(next) < a.meter.estimate(messages) {
 					messages = next
 					compactedForRetry = true
 					continue
@@ -236,6 +249,10 @@ func (a *Agent) executeTool(ctx context.Context, call lc.ToolCall, messages []lc
 		extra["result_meta"] = resultMeta
 	}
 	if err != nil {
+		text, guard := a.guardToolOutput(messages, err.Error())
+		if guard != nil {
+			extra["context_guard"] = guard
+		}
 		if a.callbacks != nil {
 			a.callbacks.Handle(callbacks.Event{
 				Event:    callbacks.EventToolError,
@@ -249,11 +266,14 @@ func (a *Agent) executeTool(ctx context.Context, call lc.ToolCall, messages []lc
 		return lc.BaseMessage{
 			Type:       lc.RoleTool,
 			ToolCallID: call.ID,
-			Content:    lc.TextContent(err.Error()),
+			Content:    lc.TextContent(text),
 			Status:     "error",
 		}
 	}
-	output = a.guardToolOutput(messages, output)
+	output, guard := a.guardToolOutput(messages, output)
+	if guard != nil {
+		extra["context_guard"] = guard
+	}
 	if a.callbacks != nil {
 		a.callbacks.Handle(callbacks.Event{
 			Event:    callbacks.EventToolEnd,

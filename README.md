@@ -93,6 +93,41 @@ Agent features include:
 | Memory | Injects compact memory snippets into the system prompt. |
 | Subagents | Adds a task tool when subagents are configured, so a supervising agent can delegate focused work. |
 | Callbacks | Emits model/tool start, end, and error events suitable for live UIs and logs. |
+| Context management | Measures context use before every model call, counting tool definitions and rescaling by the input tokens the provider reports. Shortens tool results the model has seen from 60% of the window, summarizes older messages from 85%, and cuts any tool result that wouldn't fit to a preview with its size. See below. |
+
+## Context management
+
+Set `Config.Context` to manage a long run's context:
+
+```go
+agent.ContextPolicy{
+	Enabled:       true,
+	MaxTokens:     200000,                 // the model's context window
+	SoftRatio:     0.60,                   // shorten from here
+	HardRatio:     0.85,                   // summarize from here
+	PreserveTools: []string{"skill_read"}, // never shorten these results
+	Note:          "Full history is searchable with history_search.",
+}
+```
+
+Before every model call the agent estimates the request: messages plus tool
+definitions, at about four characters per token, scaled by what the provider
+reported for the previous request (cache reads and writes included).
+
+| Tier | When | What happens |
+| --- | --- | --- |
+| Shorten | Usage at `SoftRatio` or more, or `MaxMessages` reached | Tool results the model has already seen become a digest: the tool, its arguments, the size of the output and its first `ToolDigestChars` characters. Long string arguments of earlier tool calls are cut to `ToolArgChars`. Oldest first, until usage is three quarters of `SoftRatio`. No model call. |
+| Summarize | Still at `HardRatio` or more | Older messages are replaced by a model-written summary. About `RecentRatio` of the window stays word for word. Skill results and the request being worked on are carried over word for word in their own message, and a later summary folds the earlier one in. |
+| Guard | Every tool result, as it arrives | A result larger than the room left (counting what shortening could free), or than half the window, is cut to a preview with a notice giving its size and suggesting a smaller read. |
+
+A context-length error triggers both tiers and one retry. When the error names
+the real window ("maximum context length is 128000 tokens"), the agent uses
+that window for the rest of the run.
+
+`Agent.Compact` runs the same passes on demand, for a compaction a person asks
+for. Callbacks report each pass as a `context_shorten` or `context_compaction`
+chain event, and every model start carries `context_tokens`,
+`context_window`, `shorten_at` and `summarize_at` in `Data.Extra`.
 
 ## MCP
 

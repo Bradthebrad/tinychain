@@ -207,24 +207,43 @@ func (a *Agent) executeTool(ctx context.Context, call lc.ToolCall, messages []lc
 		}
 		return lc.Tool(call.ID, fmt.Sprintf("tool %q not found", call.Name))
 	}
+	var metadata map[string]any
+	if info, ok := InfoOf(tool); ok {
+		metadata = info.Map()
+	}
+	started := time.Now().UTC()
 	if a.callbacks != nil {
 		a.callbacks.Handle(callbacks.Event{
-			Event: callbacks.EventToolStart,
-			Name:  call.Name,
-			RunID: call.ID,
-			Time:  time.Now().UTC(),
-			Data:  callbacks.EventData{Input: call.Args},
+			Event:    callbacks.EventToolStart,
+			Name:     call.Name,
+			RunID:    call.ID,
+			Time:     started,
+			Metadata: metadata,
+			Data:     callbacks.EventData{Input: call.Args},
 		})
 	}
-	output, err := tool.Call(ctx, call.Args)
+	toolCtx := WithToolCallID(ctx, call.ID)
+	var output string
+	var resultMeta map[string]any
+	var err error
+	if rich, ok := tool.(MetaTool); ok {
+		output, resultMeta, err = rich.CallWithMeta(toolCtx, call.Args)
+	} else {
+		output, err = tool.Call(toolCtx, call.Args)
+	}
+	extra := map[string]any{"duration_ms": time.Since(started).Milliseconds()}
+	if len(resultMeta) > 0 {
+		extra["result_meta"] = resultMeta
+	}
 	if err != nil {
 		if a.callbacks != nil {
 			a.callbacks.Handle(callbacks.Event{
-				Event: callbacks.EventToolError,
-				Name:  call.Name,
-				RunID: call.ID,
-				Time:  time.Now().UTC(),
-				Data:  callbacks.EventData{Input: call.Args, Error: err.Error()},
+				Event:    callbacks.EventToolError,
+				Name:     call.Name,
+				RunID:    call.ID,
+				Time:     time.Now().UTC(),
+				Metadata: metadata,
+				Data:     callbacks.EventData{Input: call.Args, Error: err.Error(), Extra: extra},
 			})
 		}
 		return lc.BaseMessage{
@@ -237,11 +256,12 @@ func (a *Agent) executeTool(ctx context.Context, call lc.ToolCall, messages []lc
 	output = a.guardToolOutput(messages, output)
 	if a.callbacks != nil {
 		a.callbacks.Handle(callbacks.Event{
-			Event: callbacks.EventToolEnd,
-			Name:  call.Name,
-			RunID: call.ID,
-			Time:  time.Now().UTC(),
-			Data:  callbacks.EventData{Input: call.Args, Output: output},
+			Event:    callbacks.EventToolEnd,
+			Name:     call.Name,
+			RunID:    call.ID,
+			Time:     time.Now().UTC(),
+			Metadata: metadata,
+			Data:     callbacks.EventData{Input: call.Args, Output: output, Extra: extra},
 		})
 	}
 	return lc.BaseMessage{

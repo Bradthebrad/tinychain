@@ -74,3 +74,43 @@ agent := agent.New(agent.Config{
 })
 ```
 
+
+## Tool Metadata And Rich Results
+
+Tools can carry the 2025-06-18 `title`, `annotations` (`readOnlyHint`,
+`destructiveHint`, `idempotentHint`, `openWorldHint`) and `outputSchema`
+fields. Results can include `structuredContent` and non-text blocks (image,
+audio, resource links, embedded resources).
+
+```go
+server.AddTool(mcp.Tool{
+	Name:        "web_search",
+	Title:       "Search the web",
+	Annotations: &mcp.ToolAnnotations{ReadOnlyHint: mcp.Bool(true), OpenWorldHint: mcp.Bool(true)},
+	Handler:     search,
+})
+```
+
+`mcp.AgentToolsForServer(ctx, client, "web", "Web tools")` returns
+`*mcp.RemoteTool` values. They implement `agent.InfoTool` (title, server,
+hints) and `agent.MetaTool` (a small result summary such as item counts and
+content types), which the agent forwards on tool callbacks as `Metadata` and
+`Data.Extra["result_meta"]`, along with `Data.Extra["duration_ms"]`. A result
+with `isError: true` is returned to the agent as an error.
+
+## Client Transport Behavior
+
+- **stdio** (`NewStdioClientWithOptions`): requests are multiplexed and matched
+  to responses by id; notifications from the server are ignored; server
+  requests (`ping`, `roots/list`) are answered. `StdioOptions.Dir` sets the
+  server's working directory. The last 32 KiB of stderr is kept
+  (`client.Stderr()`). `Close` kills the whole process tree (a Job Object on
+  Windows, a process group elsewhere). `client.Done()`/`client.Err()` report a
+  server that exits on its own.
+- **streamable HTTP** (`NewHTTPClient`): sends `MCP-Protocol-Version`, keeps
+  the `Mcp-Session-Id` the server assigns, accepts both JSON and
+  `text/event-stream` responses, and ends the session with `DELETE` on
+  `Close`.
+- `Initialize` sends `notifications/initialized` and, when roots are set with
+  `client.SetRoots`, advertises the `roots` capability. Call
+  `client.NotifyRootsChanged` after the allowed directories change.

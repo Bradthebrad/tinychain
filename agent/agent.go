@@ -88,7 +88,7 @@ func New(config Config) *Agent {
 		a.AddTool(tool)
 	}
 	if len(config.Subagents) > 0 {
-		a.AddTool(TaskTool(config.Subagents))
+		a.AddTool(taskTool(config.Subagents, config.Gate))
 	}
 	return a
 }
@@ -262,6 +262,9 @@ func (a *Agent) stopAtGate(ctx context.Context, messages []lc.BaseMessage, runID
 	messages, msg, callErr := a.callModel(ctx, messages, runID, a.toolOrder)
 	if callErr != nil {
 		if ctx.Err() != nil {
+			if a.callbacks != nil {
+				a.callbacks.Handle(callbacks.Error(callbacks.EventLLMError, runID, ctx.Err()))
+			}
 			return nil, ctx.Err()
 		}
 		msg = lc.AI("Stopped at your request.")

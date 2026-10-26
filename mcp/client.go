@@ -222,6 +222,9 @@ func (c *Client) Err() error {
 	return nil
 }
 
+// Transport returns the client's transport.
+func (c *Client) Transport() ClientTransport { return c.transport }
+
 // Stderr returns the captured tail of the server's stderr, if available.
 func (c *Client) Stderr() string {
 	if source, ok := c.transport.(StderrSource); ok {

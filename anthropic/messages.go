@@ -221,7 +221,16 @@ func contentFromLC(msg lc.BaseMessage) ContentList {
 		return ContentList{Text: msg.Content.Text}
 	}
 	blocks := make([]ContentBlock, 0, len(msg.Content.Parts)+len(msg.ToolCalls))
+	calls := make(map[string]bool, len(msg.ToolCalls))
+	for _, call := range msg.ToolCalls {
+		calls[call.ID] = true
+	}
 	for _, part := range msg.Content.Parts {
+		// A reply's tool_use blocks are also its ToolCalls; send each once,
+		// from ToolCalls, which is what the agent keeps up to date.
+		if part.Type == "tool_use" && calls[part.ID] {
+			continue
+		}
 		blocks = append(blocks, blockFromLC(part))
 	}
 	for _, call := range msg.ToolCalls {

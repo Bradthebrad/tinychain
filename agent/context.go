@@ -29,6 +29,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -122,7 +123,7 @@ func normalizeContextPolicy(policy ContextPolicy) ContextPolicy {
 	if policy.CompactionMaxChars <= 0 {
 		policy.CompactionMaxChars = 80000
 		if policy.MaxTokens > 0 {
-			policy.CompactionMaxChars = clampInt(policy.MaxTokens*4*2/5, 24000, 240000)
+			policy.CompactionMaxChars = clampInt(policy.MaxTokens*4*2/5, 4000, 240000)
 		}
 	}
 	return policy
@@ -139,10 +140,16 @@ type contextMeter struct {
 	scale      float64
 	observed   bool
 	learned    int
+	// reserve is kept free for the reply: the larger of the policy's
+	// ReserveTokens and what the model asks for as output.
+	reserve int
 }
 
-func newContextMeter(policy ContextPolicy, tools []Tool) *contextMeter {
-	m := &contextMeter{policy: policy, limit: policy.MaxTokens, scale: 1}
+func newContextMeter(policy ContextPolicy, tools []Tool, model Model) *contextMeter {
+	m := &contextMeter{policy: policy, limit: policy.MaxTokens, scale: 1, reserve: policy.ReserveTokens}
+	if budgeter, ok := model.(OutputBudgeter); ok {
+		m.reserve = maxInt(m.reserve, budgeter.MaxOutputTokens())
+	}
 	for _, tool := range tools {
 		m.toolTokens += EstimateAnyTokens(tool.Definition()) + 8
 	}
@@ -150,15 +157,22 @@ func newContextMeter(policy ContextPolicy, tools []Tool) *contextMeter {
 	return m
 }
 
+// recompute sets the thresholds. They are fractions of the input room: the
+// window less what is kept free for the reply, since providers that count
+// output against the window reject input that leaves less than max_tokens.
 func (m *contextMeter) recompute() {
 	p := m.policy
+	if m.limit > 0 {
+		m.reserve = minInt(m.reserve, m.limit/2)
+	}
+	usable := m.limit - m.reserve
 	switch {
 	case p.ThresholdTokens > 0 && p.MaxTokens > 0:
-		m.hard = int(float64(p.ThresholdTokens) * float64(m.limit) / float64(p.MaxTokens))
+		m.hard = minInt(int(float64(p.ThresholdTokens)*float64(m.limit)/float64(p.MaxTokens)), usable)
 	case p.ThresholdTokens > 0:
 		m.hard = p.ThresholdTokens
 	default:
-		m.hard = int(float64(m.limit) * p.HardRatio)
+		m.hard = int(float64(usable) * p.HardRatio)
 	}
 	m.soft = int(float64(m.hard) * p.SoftRatio / p.HardRatio)
 }
@@ -195,6 +209,7 @@ func (m *contextMeter) observe(sentRaw int, reply lc.BaseMessage) {
 
 var contextLimitPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)maximum context length is ([\d,]+)`),
+	regexp.MustCompile(`[\d,]+ \+ [\d,]+ > ([\d,]+)`),
 	regexp.MustCompile(`(?i)[\d,]+ tokens > ([\d,]+) maximum`),
 	regexp.MustCompile(`(?i)context (?:window|length|limit) of ([\d,]+)`),
 	regexp.MustCompile(`(?i)limit of ([\d,]+) tokens`),
@@ -254,6 +269,9 @@ func (m *contextMeter) snapshot(tokens int) map[string]any {
 	if m.learned > 0 {
 		out["learned_window"] = m.learned
 	}
+	if m.reserve > 0 {
+		out["reserved_tokens"] = m.reserve
+	}
 	return out
 }
 
@@ -285,7 +303,7 @@ func (a *Agent) fitContext(ctx context.Context, messages []lc.BaseMessage, runID
 		if m.limit > 0 {
 			budget = int(float64(m.limit) * a.context.RecentRatio)
 		}
-		next, report, err := a.summarizeOlder(ctx, messages, runID, current, budget, "", force, true)
+		next, report, err := a.summarizeOlder(ctx, messages, runID, current, summarizeOptions{recentBudget: budget, force: force, keepRequest: true})
 		if err != nil {
 			if a.callbacks != nil {
 				a.callbacks.Handle(callbacks.Error(callbacks.EventChainError, runID, err))
@@ -467,23 +485,41 @@ func compactArgs(args map[string]any, limit int) string {
 	return truncatePlain(string(data), maxInt(limit, 80))
 }
 
-// summarizeOlder replaces older messages with a model-written summary,
-// keeping about recentBudget tokens of recent messages word for word. A
-// negative budget keeps KeepLastMessages messages; zero keeps none.
-func (a *Agent) summarizeOlder(ctx context.Context, messages []lc.BaseMessage, runID string, estimated, recentBudget int, focus string, force, keepRequest bool) ([]lc.BaseMessage, CompactionReport, error) {
+type summarizeOptions struct {
+	// recentBudget keeps about this many tokens of recent messages word for
+	// word. Negative keeps KeepLastMessages messages; zero keeps none.
+	recentBudget int
+	focus        string
+	force        bool
+	// keepRequest carries the request being worked on word for word.
+	keepRequest bool
+	// requireModel fails instead of falling back to a summary made without
+	// the model.
+	requireModel bool
+}
+
+// summarizeOlder replaces older messages with a model-written summary. The
+// summary is a user message, so the conversation still starts with one, and
+// it carries the request being worked on (text and images) word for word.
+// Skill text goes into a system message that later summaries leave alone.
+func (a *Agent) summarizeOlder(ctx context.Context, messages []lc.BaseMessage, runID string, estimated int, opts summarizeOptions) ([]lc.BaseMessage, CompactionReport, error) {
 	report := CompactionReport{BeforeTokens: estimated, AfterTokens: estimated}
 	policy := a.context
 	first := firstNonSystemMessage(messages)
 	var prefix, earlier []lc.BaseMessage
 	for _, msg := range messages[:first] {
-		if msg.Type == lc.RoleSystem && strings.HasPrefix(contentText(msg.Content), summaryMarker) {
+		if isSummaryMessage(msg) {
 			earlier = append(earlier, msg)
 			continue
 		}
 		prefix = append(prefix, msg)
 	}
-	start := a.recentStart(messages, first, recentBudget)
+	start := a.recentStart(messages, first, opts.recentBudget)
 	if start <= first {
+		return messages, report, nil
+	}
+	// Summarizing a sliver costs a model call and frees nothing.
+	if !opts.force && a.meter != nil && a.estimateMessages(messages[first:start]) < maxInt(512, a.meter.limit/20) {
 		return messages, report, nil
 	}
 	old := append(earlier, messages[first:start]...)
@@ -491,7 +527,7 @@ func (a *Agent) summarizeOlder(ctx context.Context, messages []lc.BaseMessage, r
 
 	if a.callbacks != nil {
 		data := a.meterSnapshot(estimated)
-		data["force"] = force
+		data["force"] = opts.force
 		data["old_messages"] = len(old)
 		data["recent_messages"] = len(recent)
 		a.callbacks.Handle(callbacks.Event{
@@ -503,22 +539,33 @@ func (a *Agent) summarizeOlder(ctx context.Context, messages []lc.BaseMessage, r
 		})
 	}
 
-	summary, usage := a.modelSummary(ctx, old, firstNonEmpty(focus, policy.Focus))
+	summary, usage, err := a.modelSummary(ctx, old, firstNonEmpty(opts.focus, policy.Focus))
+	if err != nil && opts.requireModel {
+		return messages, report, fmt.Errorf("summarize: %w", err)
+	}
 	if strings.TrimSpace(summary) == "" {
 		summary = deterministicSummary(old, policy)
 	}
-	kept := keptText(old, recent, policy, keepRequest)
+	var request []lc.ContentPart
+	if opts.keepRequest {
+		limit := 16000
+		if a.meter != nil && a.meter.limit > 0 {
+			limit = clampInt(a.meter.limit*4*15/100, 2000, 60000)
+		}
+		request = requestParts(old, limit)
+	}
+	skills := preservedResults(old, policy.PreserveTools)
 	build := func(summary string) []lc.BaseMessage {
 		next := make([]lc.BaseMessage, 0, len(prefix)+2+len(recent))
 		next = append(next, prefix...)
-		if kept != "" {
-			next = append(next, lc.System(kept))
+		if skills != "" {
+			next = append(next, lc.System(keptMarker+"\n\nSkill instructions loaded earlier:\n\n"+skills))
 		}
-		next = append(next, lc.System(summaryText(summary, policy)))
+		next = append(next, summaryMessage(summary, policy.Note, request))
 		return append(next, recent...)
 	}
 	next := build(summary)
-	if a.estimateMessages(next) >= a.estimateMessages(messages) {
+	if !opts.requireModel && a.estimateMessages(next) >= a.estimateMessages(messages) {
 		short := deterministicSummary(old, ContextPolicy{ToolResultSafetyChars: 1200, CompactionMaxChars: 24000})
 		if alt := build(short); a.estimateMessages(alt) < a.estimateMessages(next) {
 			summary, next = short, alt
@@ -560,41 +607,105 @@ func (a *Agent) meterSnapshot(tokens int) map[string]any {
 	return map[string]any{"context_tokens": tokens}
 }
 
-// summaryText is the message that replaces older messages.
-func summaryText(summary string, policy ContextPolicy) string {
-	var b strings.Builder
-	b.WriteString(summaryMarker)
-	b.WriteString("\n\n")
-	b.WriteString(strings.TrimSpace(summary))
-	if note := strings.TrimSpace(policy.Note); note != "" {
-		b.WriteString("\n\n")
-		b.WriteString(note)
+// requestMarker introduces the request carried inside a summary.
+const requestMarker = "The request being worked on, and any instructions since, word for word:"
+
+// summaryMessage is the user message that replaces older messages.
+func summaryMessage(summary, note string, request []lc.ContentPart) lc.BaseMessage {
+	text := summaryMarker + "\n\n" + strings.TrimSpace(summary)
+	if note = strings.TrimSpace(note); note != "" {
+		text += "\n\n" + note
 	}
-	return b.String()
+	if len(request) == 0 {
+		return lc.Human(text)
+	}
+	parts := append([]lc.ContentPart{{Type: "text", Text: text + "\n\n" + requestMarker}}, request...)
+	return lc.BaseMessage{Type: lc.RoleHuman, Content: lc.PartsContent(parts...)}
 }
 
-// keptMarker starts the message that carries text a summary must not
-// paraphrase. It is an ordinary leading system message, so later summaries
-// keep it as it is.
+func isSummaryMessage(msg lc.BaseMessage) bool {
+	return strings.HasPrefix(contentText(msg.Content), summaryMarker)
+}
+
+// keptMarker starts the system message that carries skill text a summary
+// must not paraphrase. Later summaries keep it as it is.
 const keptMarker = "Kept word for word from earlier in this conversation."
 
-// keptText carries skill text and the request being worked on out of the
-// messages being summarized, because a summary of instructions is not the
-// instructions.
-func keptText(old, recent []lc.BaseMessage, policy ContextPolicy, keepRequest bool) string {
-	var sections []string
-	if keepRequest && lastIndexOfRole(recent, lc.RoleHuman) < 0 {
-		if i := lastIndexOfRole(old, lc.RoleHuman); i >= 0 {
-			sections = append(sections, "The request being worked on:\n"+truncateRunes(contentText(old[i].Content), 8000))
+// requestParts collects what the person asked in the request being worked
+// on: their messages since the last final answer, with any attachments, up
+// to about limit characters of text, newest kept first. A summary's carried
+// request is carried again.
+func requestParts(old []lc.BaseMessage, limit int) []lc.ContentPart {
+	start := 0
+	for i, msg := range old {
+		if msg.Type == lc.RoleAI && len(msg.ToolCalls) == 0 {
+			start = i + 1
 		}
 	}
-	if skills := preservedResults(old, policy.PreserveTools); skills != "" {
-		sections = append(sections, "Skill instructions loaded earlier:\n\n"+skills)
+	var groups [][]lc.ContentPart
+	for _, msg := range old[start:] {
+		switch {
+		case msg.Type != lc.RoleHuman:
+		case isSummaryMessage(msg):
+			if carried := carriedRequest(msg); len(carried) > 0 {
+				groups = append(groups, carried)
+			}
+		case msg.Content.Text != nil:
+			groups = append(groups, []lc.ContentPart{{Type: "text", Text: *msg.Content.Text}})
+		default:
+			groups = append(groups, append([]lc.ContentPart(nil), msg.Content.Parts...))
+		}
 	}
-	if len(sections) == 0 {
-		return ""
+	var kept [][]lc.ContentPart
+	used, dropped := 0, 0
+	for i := len(groups) - 1; i >= 0; i-- {
+		size := 0
+		for _, part := range groups[i] {
+			size += utf8.RuneCountInString(part.Text)
+		}
+		switch {
+		case used+size <= limit:
+			kept = append([][]lc.ContentPart{groups[i]}, kept...)
+			used += size
+		case len(kept) == 0:
+			// The newest message alone is too long: keep its start.
+			var cut []lc.ContentPart
+			for _, part := range groups[i] {
+				if part.Text != "" {
+					part.Text = truncatePlain(part.Text, maxInt(limit-used, 0))
+					used += utf8.RuneCountInString(part.Text)
+				}
+				cut = append(cut, part)
+			}
+			cut = append(cut, lc.ContentPart{Type: "text", Text: "\n[The rest of this message is in the conversation history.]"})
+			kept = append(kept, cut)
+		default:
+			dropped++
+		}
+		if used >= limit && i > 0 {
+			dropped += i
+			break
+		}
 	}
-	return keptMarker + "\n\n" + strings.Join(sections, "\n\n")
+	var parts []lc.ContentPart
+	if dropped > 0 {
+		parts = append(parts, lc.ContentPart{Type: "text", Text: fmt.Sprintf("[%d earlier messages of this request are covered by the summary.]", dropped)})
+	}
+	for i, group := range kept {
+		if i > 0 || dropped > 0 {
+			parts = append(parts, lc.ContentPart{Type: "text", Text: "\n---\n"})
+		}
+		parts = append(parts, group...)
+	}
+	return parts
+}
+
+func carriedRequest(summary lc.BaseMessage) []lc.ContentPart {
+	parts := summary.Content.Parts
+	if len(parts) < 2 || !strings.HasSuffix(parts[0].Text, requestMarker) {
+		return nil
+	}
+	return append([]lc.ContentPart(nil), parts[1:]...)
 }
 
 func preservedResults(messages []lc.BaseMessage, tools []string) string {
@@ -673,10 +784,10 @@ func compactionBoundary(messages []lc.BaseMessage, keep int) int {
 
 // modelSummary asks the model for a summary. It also returns what the call
 // used, so callers can account for it.
-func (a *Agent) modelSummary(ctx context.Context, messages []lc.BaseMessage, focus string) (string, *lc.UsageMetadata) {
+func (a *Agent) modelSummary(ctx context.Context, messages []lc.BaseMessage, focus string) (string, *lc.UsageMetadata, error) {
 	transcript := formatMessagesForCompaction(messages, a.context)
 	if strings.TrimSpace(transcript) == "" {
-		return "", nil
+		return "", nil, nil
 	}
 	system := strings.Join([]string{
 		"You compact agent conversation state.",
@@ -691,9 +802,13 @@ func (a *Agent) modelSummary(ctx context.Context, messages []lc.BaseMessage, foc
 	prompt := "Compact these older messages and tool results into a concise state summary.\n\n" + transcript
 	msg, err := a.model.Call(ctx, []lc.BaseMessage{lc.System(system), lc.Human(prompt)}, nil)
 	if err != nil {
-		return "", nil
+		return "", nil, err
 	}
-	return strings.TrimSpace(contentText(msg.Content)), msg.UsageMetadata
+	text := strings.TrimSpace(contentText(msg.Content))
+	if text == "" {
+		return "", msg.UsageMetadata, errors.New("the model returned an empty summary")
+	}
+	return text, msg.UsageMetadata, nil
 }
 
 // CompactionReport describes one compaction.
@@ -719,19 +834,20 @@ type CompactOptions struct {
 // and regardless of usage: every tool result already seen is shortened, then
 // older messages are summarized. Leading system messages are kept, and so is
 // skill text. Use it for a compaction someone asks for between requests; the
-// summary is the last message of the result.
+// summary is the last message of the result. It fails, changing nothing, if
+// the model can't write the summary.
 func (a *Agent) Compact(ctx context.Context, messages []lc.BaseMessage, options CompactOptions) ([]lc.BaseMessage, CompactionReport, error) {
 	if a.model == nil {
 		return messages, CompactionReport{}, fmt.Errorf("agent: model is required")
 	}
 	local, ctx, runID := a.scopedRun(ctx)
-	local.meter = newContextMeter(local.context, local.toolOrder)
+	local.meter = newContextMeter(local.context, local.toolOrder, local.model)
 	before := local.meter.estimate(messages)
 	next, shortened := shortenSeenToolResults(messages, local.meter, 0, local.context)
 	if shortened > 0 {
 		local.emitContext(runID, "context_shorten", before, local.meter.estimate(next), map[string]any{"shortened": shortened, "force": true})
 	}
-	summarized, report, err := local.summarizeOlder(ctx, next, runID, local.meter.estimate(next), maxInt(0, options.KeepRecentTokens), options.Focus, true, false)
+	summarized, report, err := local.summarizeOlder(ctx, next, runID, local.meter.estimate(next), summarizeOptions{recentBudget: maxInt(0, options.KeepRecentTokens), focus: options.Focus, force: true, requireModel: true})
 	report.BeforeTokens = before
 	report.Shortened = shortened
 	report.Window = local.meter.limit
@@ -750,7 +866,7 @@ func (a *Agent) shouldCompactAfterError(err error) bool {
 		return false
 	}
 	text := strings.ToLower(err.Error())
-	for _, phrase := range []string{"context window", "exceeds the context", "too many tokens", "maximum context", "context length", "context_length_exceeded", "prompt is too long", "input is too long", "reduce the length"} {
+	for _, phrase := range []string{"context window", "exceeds the context", "too many tokens", "maximum context", "context length", "context_length_exceeded", "prompt is too long", "input is too long", "reduce the length", "exceed context limit"} {
 		if strings.Contains(text, phrase) {
 			return true
 		}
@@ -771,8 +887,12 @@ func (a *Agent) guardToolOutput(messages []lc.BaseMessage, output string) (strin
 	if size < 256 {
 		return output, nil
 	}
-	used := m.estimate(messages) - m.reclaimable(messages)
-	free := m.limit - a.context.ReserveTokens - used
+	used := m.estimate(messages)
+	if a.context.Enabled {
+		// Shortening will free this before the next model call.
+		used -= m.reclaimable(messages)
+	}
+	free := m.limit - m.reserve - used
 	allowed := minInt(free, m.limit/2)
 	if size <= allowed {
 		return output, nil
@@ -946,9 +1066,13 @@ func formatMessagesForCompaction(messages []lc.BaseMessage, policy ContextPolicy
 		}
 		b.WriteString(" ---\n")
 		text := contentText(msg.Content)
-		if msg.Type == lc.RoleTool {
+		switch {
+		case msg.Type == lc.RoleTool:
 			text = truncateRunes(text, perTool)
-		} else {
+		case isSummaryMessage(msg):
+			// An earlier summary is already dense; keep most of it.
+			text = truncateRunes(text, maxInt(perTool, limit/3))
+		default:
 			text = truncateRunes(text, maxInt(4000, perTool/2))
 		}
 		b.WriteString(text)
@@ -993,6 +1117,11 @@ func deterministicSummary(messages []lc.BaseMessage, policy ContextPolicy) strin
 	var b strings.Builder
 	b.WriteString("Deterministic compaction summary of older context:\n")
 	for i, msg := range messages {
+		if isSummaryMessage(msg) {
+			b.WriteString(truncateRunes(strings.TrimSpace(strings.TrimPrefix(contentText(msg.Content), summaryMarker)), 6000))
+			b.WriteString("\n")
+			continue
+		}
 		text := strings.ReplaceAll(contentText(msg.Content), "\n", " ")
 		if msg.Type == lc.RoleTool {
 			fmt.Fprintf(&b, "- tool result %s: %s\n", firstNonEmpty(msg.ToolCallID, fmt.Sprintf("#%d", i+1)), truncateRunes(text, 600))

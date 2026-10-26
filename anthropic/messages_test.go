@@ -90,3 +90,24 @@ func TestThinkingBlocksArePreservedAsReasoning(t *testing.T) {
 func strPtr(value string) *string {
 	return &value
 }
+
+func TestToolCallsAreSentOnce(t *testing.T) {
+	msg := lc.BaseMessage{
+		Type:      lc.RoleAI,
+		Content:   lc.PartsContent(lc.ContentPart{Type: "text", Text: "reading"}, lc.ContentPart{Type: "tool_use", ID: "t1", Name: "read", Input: map[string]any{"path": "long original"}}),
+		ToolCalls: []lc.ToolCall{{ID: "t1", Name: "read", Args: map[string]any{"path": "short"}}},
+	}
+	blocks := contentFromLC(msg).Blocks
+	count := 0
+	for _, block := range blocks {
+		if block.Type == "tool_use" {
+			count++
+			if block.Input["path"] != "short" {
+				t.Fatalf("sent the stale copy: %v", block.Input)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("%d tool_use blocks for one call", count)
+	}
+}

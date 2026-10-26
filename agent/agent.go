@@ -99,7 +99,7 @@ func (a *Agent) invokeMessages(ctx context.Context, input []lc.BaseMessage, inbo
 	messages := append([]lc.BaseMessage{}, a.systemMessages()...)
 	messages = append(messages, input...)
 	a, ctx, runID := a.scopedRun(ctx)
-	a.meter = newContextMeter(a.context, a.toolOrder)
+	a.meter = newContextMeter(a.context, a.toolOrder, a.model)
 	for step := 0; step < a.maxIterations; step++ {
 		if err := ctx.Err(); err != nil {
 			if a.callbacks != nil {

@@ -172,13 +172,13 @@ func TestSummarizeTierRunsOnlyPastHardThreshold(t *testing.T) {
 		t.Fatal("no compaction events")
 	}
 	before, _ := starts[0].Data.Extra["context_tokens"].(int)
-	if before < 8000*85/100 {
+	if before < (8000-200)*85/100 {
 		t.Fatalf("summarized at %d tokens, under the hard threshold", before)
 	}
 	var summary, kept strings.Builder
 	for _, msg := range model.seen[len(model.seen)-1] {
 		text := contentText(msg.Content)
-		if msg.Type == lc.RoleSystem && strings.HasPrefix(text, summaryMarker) {
+		if strings.HasPrefix(text, summaryMarker) {
 			summary.WriteString(text)
 		}
 		if msg.Type == lc.RoleSystem && strings.HasPrefix(text, keptMarker) {
@@ -194,8 +194,12 @@ func TestSummarizeTierRunsOnlyPastHardThreshold(t *testing.T) {
 	if !strings.Contains(kept.String(), "Skill instructions loaded earlier") || !strings.Contains(kept.String(), "contents of file1.txt") {
 		t.Fatalf("skills replaced by the summary were not kept word for word: %q", kept.String())
 	}
-	if !strings.Contains(kept.String(), "load every skill") {
-		t.Fatalf("the request being worked on was dropped: %q", kept.String())
+	if !strings.Contains(summary.String(), "load every skill") {
+		t.Fatalf("the request being worked on was dropped: %q", summary.String())
+	}
+	last := model.seen[len(model.seen)-1]
+	if first := firstNonSystemMessage(last); last[first].Type != lc.RoleHuman {
+		t.Fatalf("after summarizing, the conversation starts with %s", last[first].Type)
 	}
 }
 
@@ -227,7 +231,7 @@ func TestEstimatesFollowReportedInputTokens(t *testing.T) {
 		return &lc.UsageMetadata{InputTokens: raw, InputTokenDetails: map[string]int{"cache_read_input_tokens": raw}}
 	}
 	agent := New(Config{Model: model, Tools: []Tool{readTool("read", 100)}, Context: ContextPolicy{Enabled: true, MaxTokens: 100000}})
-	meter = newContextMeter(agent.context, agent.toolOrder)
+	meter = newContextMeter(agent.context, agent.toolOrder, agent.model)
 	meter.observe(1000, lc.BaseMessage{UsageMetadata: &lc.UsageMetadata{InputTokens: 1500, InputTokenDetails: map[string]int{"cache_read_input_tokens": 500}}})
 	if meter.scale != 2 {
 		t.Fatalf("scale %v, want 2 (cache reads count as input)", meter.scale)
@@ -287,7 +291,7 @@ func TestContextLimitFromError(t *testing.T) {
 
 func TestGuardCountsSpaceShorteningCouldFree(t *testing.T) {
 	agent := New(Config{Model: &readerModel{}, Context: ContextPolicy{Enabled: true, MaxTokens: 6000, ReserveTokens: 100}})
-	agent.meter = newContextMeter(agent.context, nil)
+	agent.meter = newContextMeter(agent.context, nil, agent.model)
 	messages := []lc.BaseMessage{lc.Human("go")}
 	for i := 0; i < 4; i++ {
 		id := fmt.Sprintf("c%d", i)
@@ -382,5 +386,109 @@ func TestShortenedArgumentsStayValid(t *testing.T) {
 	}
 	if len(msg.ToolCalls[0].Args["content"].(string)) != 5000 {
 		t.Fatal("original message was modified")
+	}
+}
+
+func TestGuardWithCompactionOffDoesNotCountOnShortening(t *testing.T) {
+	agent := New(Config{Model: &readerModel{}, Context: ContextPolicy{Enabled: false, MaxTokens: 6000, ReserveTokens: 100}})
+	agent.meter = newContextMeter(agent.context, nil, agent.model)
+	messages := []lc.BaseMessage{lc.Human("go")}
+	for i := 0; i < 4; i++ {
+		id := fmt.Sprintf("c%d", i)
+		messages = append(messages,
+			lc.BaseMessage{Type: lc.RoleAI, ToolCalls: []lc.ToolCall{{ID: id, Name: "read", Args: map[string]any{}}}},
+			lc.Tool(id, strings.Repeat("x", 4000)))
+	}
+	messages = append(messages, lc.BaseMessage{Type: lc.RoleAI, ToolCalls: []lc.ToolCall{{ID: "next", Name: "read", Args: map[string]any{}}}})
+	out, guard := agent.guardToolOutput(messages, strings.Repeat("y", 10000))
+	if guard == nil {
+		t.Fatal("nothing will shorten earlier results, so this one must be cut")
+	}
+	if total := agent.meter.estimate(append(messages, lc.Tool("next", out))); total > 6000-100 {
+		t.Fatalf("guarded result still overflows: %d tokens", total)
+	}
+}
+
+func TestThresholdsLeaveRoomForTheReply(t *testing.T) {
+	meter := newContextMeter(normalizeContextPolicy(ContextPolicy{Enabled: true, MaxTokens: 200000}), nil, AnthropicModel{Model: "claude-x", MaxTokens: 64000})
+	if meter.reserve != 64000 || meter.hard != int(136000*0.85) || meter.soft != int(float64(meter.hard)*0.6/0.85) {
+		t.Fatalf("reserve %d, hard %d, soft %d", meter.reserve, meter.hard, meter.soft)
+	}
+	err := errors.New("input length and `max_tokens` exceed context limit: 150000 + 64000 > 200000, decrease input length or `max_tokens` and try again")
+	agent := New(Config{Model: &readerModel{}, Context: ContextPolicy{Enabled: true, MaxTokens: 200000}})
+	if !agent.shouldCompactAfterError(err) || ContextLimitFromError(err) != 200000 {
+		t.Fatal("Anthropic's input-plus-output error not recognized")
+	}
+}
+
+type failingSummaryModel struct{ readerModel }
+
+func (m *failingSummaryModel) Call(ctx context.Context, messages []lc.BaseMessage, tools []Tool) (lc.BaseMessage, error) {
+	if len(tools) == 0 {
+		return lc.BaseMessage{}, errors.New("401 unauthorized")
+	}
+	return m.readerModel.Call(ctx, messages, tools)
+}
+
+func TestCompactFailsWhenTheModelCannotSummarize(t *testing.T) {
+	agent := New(Config{Model: &failingSummaryModel{}, Context: ContextPolicy{Enabled: true, MaxTokens: 100000}})
+	messages := []lc.BaseMessage{lc.Human("one"), lc.AI("two"), lc.Human("three"), lc.AI("four")}
+	next, _, err := agent.Compact(context.Background(), messages, CompactOptions{})
+	if err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("err %v", err)
+	}
+	if len(next) != len(messages) {
+		t.Fatal("messages changed although compaction failed")
+	}
+}
+
+func TestSummaryCarriesTheRequestWithImagesAndLaterInstructions(t *testing.T) {
+	image := lc.ContentPart{Type: "image", Source: &lc.ContentSource{Type: "base64", MediaType: "image/png", Data: "AAAA"}}
+	request := lc.BaseMessage{Type: lc.RoleHuman, Content: lc.PartsContent(lc.ContentPart{Type: "text", Text: "fix the chart " + strings.Repeat("r", 9000)}, image)}
+	old := []lc.BaseMessage{
+		lc.Human("an earlier question"), lc.AI("an earlier answer"),
+		request,
+		{Type: lc.RoleAI, ToolCalls: []lc.ToolCall{{ID: "a", Name: "read"}}}, lc.Tool("a", "data"),
+		lc.Human("also use blue"),
+	}
+	parts := requestParts(old, 40000)
+	msg := summaryMessage("did things", "", parts)
+	text := contentText(msg.Content)
+	if !strings.Contains(text, strings.Repeat("r", 9000)) || !strings.Contains(text, "also use blue") || strings.Contains(text, "an earlier question") {
+		t.Fatalf("carried request wrong: %d chars", len(text))
+	}
+	if nonTextParts(msg.Content) != 1 {
+		t.Fatal("the request's image was not carried")
+	}
+	// A later summary carries it again.
+	again := requestParts([]lc.BaseMessage{msg, {Type: lc.RoleAI, ToolCalls: []lc.ToolCall{{ID: "b", Name: "read"}}}, lc.Tool("b", "x")}, 40000)
+	if got := contentText(summaryMessage("more", "", again).Content); !strings.Contains(got, "also use blue") || strings.Contains(got, "did things") {
+		t.Fatalf("request not re-carried: %q", got[:120])
+	}
+}
+
+func TestSummarizingASliverIsSkipped(t *testing.T) {
+	model := &readerModel{}
+	agent := New(Config{Model: model, Context: ContextPolicy{Enabled: true, MaxTokens: 100000}})
+	agent.meter = newContextMeter(agent.context, nil, agent.model)
+	messages := []lc.BaseMessage{lc.System("p"), lc.Human("hi"), lc.AI("hello"), lc.Human("next")}
+	next, report, _ := agent.summarizeOlder(context.Background(), messages, "r", 10, summarizeOptions{recentBudget: 5})
+	if report.Summarized != 0 || len(next) != len(messages) || model.summaries != 0 {
+		t.Fatal("summarized a few tokens")
+	}
+}
+
+func TestCarriedRequestIsBounded(t *testing.T) {
+	var old []lc.BaseMessage
+	for i := 0; i < 10; i++ {
+		old = append(old, lc.Human(fmt.Sprintf("part %d %s", i, strings.Repeat("p", 1000))))
+	}
+	text := contentText(summaryMessage("s", "", requestParts(old, 2500)).Content)
+	if !strings.Contains(text, "part 9") || strings.Contains(text, "part 5") || !strings.Contains(text, "8 earlier messages of this request") {
+		t.Fatalf("carried %d chars: %q", len(text), text[:200])
+	}
+	huge := requestParts([]lc.BaseMessage{lc.Human(strings.Repeat("h", 9000))}, 2000)
+	if got := contentText(lc.Content{Parts: huge}); len(got) > 2200 || !strings.Contains(got, "rest of this message") {
+		t.Fatalf("an oversized request was not cut: %d", len(got))
 	}
 }

@@ -46,7 +46,7 @@ func TestAgentCompactsBeforeModelCall(t *testing.T) {
 	}
 	foundSummary := false
 	for _, msg := range result.Messages {
-		if msg.Type == lc.RoleSystem && strings.Contains(contentText(msg.Content), "summary compacted older state") {
+		if msg.Type == lc.RoleHuman && strings.Contains(contentText(msg.Content), "summary compacted older state") {
 			foundSummary = true
 		}
 	}

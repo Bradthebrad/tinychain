@@ -1,10 +1,11 @@
-# tinychain
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/tinychain-dark.svg">
+  <img alt="tinychain: small Go modules for agents, tools, models and MCP" src="assets/tinychain-light.svg">
+</picture>
 
-![tinychain module hero](assets/tinychain-hero.svg)
+`tinychain` is a small Go module for building model clients, agents, skills, tools and MCP tool servers without pulling a framework into your binary. It is the engine under [NullBot](https://github.com/Bradthebrad/nullbot): NullBot's manager and subagents run on `agent`, talk to providers through `openai` and `anthropic`, and reach every tool server through `mcp`. NullBot's own servers ([code](https://github.com/Bradthebrad/nullbot-code-mcp), [web](https://github.com/Bradthebrad/nullbot-web-mcp), [parsers](https://github.com/Bradthebrad/nullbot-parsers-mcp), [image tools](https://github.com/Bradthebrad/nullbot-imagetools-mcp), [email](https://github.com/Bradthebrad/nullbot-emails-mcp), [drives](https://github.com/Bradthebrad/nullbot-drives-mcp), [messages](https://github.com/Bradthebrad/nullbot-messages-mcp)) are built on `mcp` too.
 
-`tinychain` is a tiny Go module for building LangChain-shaped clients, agents, skills, tools, and MCP-style tool servers without dragging a whole ecosystem into your binary.
-
-It is intentionally boring in the best way: small structs, explicit interfaces, stdlib-first networking, and just enough agent loop to build real local apps like NullBot.
+It is intentionally boring: small structs, explicit interfaces, standard-library networking, and just enough agent loop to build real local apps.
 
 ## Packages
 
@@ -16,6 +17,7 @@ It is intentionally boring in the best way: small structs, explicit interfaces, 
 | `anthropic` | `github.com/Bradthebrad/tinychain/anthropic` | Anthropic Messages request/response structs plus a tiny HTTP client. |
 | `agent` | `github.com/Bradthebrad/tinychain/agent` | Minimal model/tool loop with skills, memory prompt injection, todo planning, subagent task delegation, and callback events. |
 | `mcp` | `github.com/Bradthebrad/tinychain/mcp` | Minimal MCP-style JSON-RPC protocol, stdio-first server/client transport, HTTP/SSE helpers, and adapters that expose MCP tools to agents. |
+| `streaming` | `github.com/Bradthebrad/tinychain/streaming` | Opt-in output deltas (text and reasoning summaries) carried through model calls, for live UIs. |
 
 The repository is one Go module, so consumers can build from a single clone or let `go mod` pull the tagged module automatically.
 
@@ -41,7 +43,7 @@ The client packages contain the data models and provider clients:
 | `openai` | Chat Completions and Responses API request/response structs plus a tiny HTTP client. |
 | `anthropic` | Anthropic Messages request/response structs plus a tiny HTTP client. |
 
-The OpenAI client defaults to `https://api.openai.com/v1`, but `BaseURL` is configurable for OpenAI-compatible providers.
+The OpenAI client defaults to `https://api.openai.com/v1`, but `BaseURL` is configurable for OpenAI-compatible providers, including servers on your own machine or network (Ollama, llama.cpp, LM Studio, vLLM). NullBot's planned local-model support builds on this.
 
 ## Agent
 
@@ -153,16 +155,17 @@ This is intentionally not a full MCP kitchen sink. It is the smallest practical 
 
 ```text
 tinychain/
-  assets/
-    tinychain-hero.svg
-  anthropic/
-  callbacks/
-  lc/
-  openai/
-  agent/
+  agent/        model/tool loop, skills, memory, todos, subagents, run control, context
+  anthropic/    Anthropic Messages client
+  callbacks/    model and tool events
+  lc/           messages, content blocks, tool calls, generations
+  mcp/          MCP client, server, transports, agent adapter
+  openai/       Chat Completions and Responses client
+  streaming/    opt-in output deltas
   examples/
     openai_example_agent/
-  mcp/
+    openai_example_chat/
+  assets/       README graphics
 ```
 
 ## Tiny OpenAI Example Agent
@@ -171,7 +174,8 @@ The repo includes a baby-sized CLI REPL example that uses the `agent` and client
 
 ```powershell
 cd examples/openai_example_agent
-go run . -api-key sk-your-key
+$env:OPENAI_API_KEY = 'YOUR_OPENAI_API_KEY'
+go run .
 ```
 
 It defaults to `gpt-4o-mini` and supports:
@@ -195,7 +199,7 @@ There is also an even smaller direct chat REPL that skips the agent layer and ca
 
 ```powershell
 cd examples/openai_example_chat
-go run . -api-key sk-your-key
+go run .
 go build -trimpath -ldflags "-s -w" -o ..\..\openai_example_chat.exe .
 ```
 

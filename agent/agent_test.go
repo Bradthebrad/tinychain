@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -162,5 +164,20 @@ func TestOpenAIResponseReasoningSummaryIsPreserved(t *testing.T) {
 	reasoning := lc.VisibleReasoning(msg)
 	if len(reasoning) != 1 || reasoning[0] != "checked the constraints" {
 		t.Fatalf("reasoning = %#v", reasoning)
+	}
+}
+
+func TestParseSkillFileAcceptsWindowsLineEndingsAndBOM(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "SKILL.md")
+	content := "\ufeff---\r\nname: web-search\r\ndescription: Search the web.\r\n---\r\n\r\n# Web search\r\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	skill, err := ParseSkillFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skill.Name != "web-search" || skill.Description != "Search the web." {
+		t.Fatalf("skill = %#v", skill)
 	}
 }

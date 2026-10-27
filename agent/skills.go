@@ -55,7 +55,8 @@ func ParseSkillFile(path string) (Skill, error) {
 	if err != nil {
 		return Skill{}, err
 	}
-	content := string(data)
+	// Files saved on Windows often have CRLF line endings or a byte order mark.
+	content := strings.ReplaceAll(strings.TrimPrefix(string(data), "\ufeff"), "\r\n", "\n")
 	if !strings.HasPrefix(content, "---\n") {
 		return Skill{}, fmt.Errorf("agent: %s has no frontmatter", path)
 	}

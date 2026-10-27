@@ -14,6 +14,32 @@ type Model interface {
 	Call(ctx context.Context, messages []lc.BaseMessage, tools []Tool) (lc.BaseMessage, error)
 }
 
+// OutputBudgeter is a model that knows how many output tokens it asks for.
+// Providers that count output against the window reject requests whose input
+// leaves less room than that, so the agent keeps it free.
+type OutputBudgeter interface {
+	MaxOutputTokens() int
+}
+
+// MaxOutputTokens is the max_tokens this model sends, or 0 for the
+// provider's default.
+func (m OpenAIModel) MaxOutputTokens() int {
+	if m.MaxTokens != nil {
+		return *m.MaxTokens
+	}
+	return 0
+}
+
+// MaxOutputTokens is the max_tokens this model sends, thinking included.
+func (m AnthropicModel) MaxOutputTokens() int {
+	maxTokens := m.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = 1024
+	}
+	_, _, maxTokens = anthropicThinking(m.Model, m.ReasoningEffort, maxTokens)
+	return maxTokens
+}
+
 type OpenAIModel struct {
 	Client          openai.Client
 	Model           string

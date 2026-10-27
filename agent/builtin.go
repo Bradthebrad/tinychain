@@ -66,6 +66,12 @@ type Subagent struct {
 }
 
 func TaskTool(subagents []Subagent) Tool {
+	return taskTool(subagents, nil)
+}
+
+// taskTool runs subagents under the parent's step gate, so pausing or
+// stopping the parent reaches them too.
+func taskTool(subagents []Subagent, gate StepGate) Tool {
 	byName := map[string]Subagent{}
 	for _, subagent := range subagents {
 		byName[subagent.Name] = subagent
@@ -93,6 +99,7 @@ func TaskTool(subagents []Subagent) Tool {
 				Skills:        spec.Skills,
 				Memory:        spec.Memory,
 				MaxIterations: spec.MaxIterations,
+				Gate:          gate,
 			})
 			result, err := sub.InvokeMessages(ctx, []lc.BaseMessage{lc.Human(stringArg(args, "description"))})
 			if err != nil {

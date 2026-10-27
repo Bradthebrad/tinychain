@@ -46,7 +46,7 @@ func TestAgentCompactsBeforeModelCall(t *testing.T) {
 	}
 	foundSummary := false
 	for _, msg := range result.Messages {
-		if msg.Type == lc.RoleSystem && strings.Contains(contentText(msg.Content), "summary compacted older state") {
+		if msg.Type == lc.RoleHuman && strings.Contains(contentText(msg.Content), "summary compacted older state") {
 			foundSummary = true
 		}
 	}
@@ -104,7 +104,7 @@ func TestAgentGuardsOversizedToolResult(t *testing.T) {
 	if _, err := agent.Invoke(context.Background(), "start"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(model.toolResult, "NullBot context guard") {
+	if !strings.Contains(model.toolResult, "Context guard") {
 		t.Fatalf("tool result was not guarded: %q", model.toolResult)
 	}
 	if len(model.toolResult) > 900 {

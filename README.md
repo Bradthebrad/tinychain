@@ -1,10 +1,11 @@
-# tinychain
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/tinychain-dark.svg">
+  <img alt="tinychain: small Go modules for agents, tools, models and MCP" src="assets/tinychain-light.svg">
+</picture>
 
-![tinychain module hero](assets/tinychain-hero.svg)
+`tinychain` is a small Go module for building model clients, agents, skills, tools and MCP tool servers without pulling a framework into your binary. It is the engine under [NullBot](https://github.com/Bradthebrad/nullbot): NullBot's manager and subagents run on `agent`, talk to providers through `openai` and `anthropic`, and reach every tool server through `mcp`. NullBot's own servers ([code](https://github.com/Bradthebrad/nullbot-code-mcp), [web](https://github.com/Bradthebrad/nullbot-web-mcp), [parsers](https://github.com/Bradthebrad/nullbot-parsers-mcp), [image tools](https://github.com/Bradthebrad/nullbot-imagetools-mcp), [email](https://github.com/Bradthebrad/nullbot-emails-mcp), [drives](https://github.com/Bradthebrad/nullbot-drives-mcp), [messages](https://github.com/Bradthebrad/nullbot-messages-mcp)) are built on `mcp` too.
 
-`tinychain` is a tiny Go module for building LangChain-shaped clients, agents, skills, tools, and MCP-style tool servers without dragging a whole ecosystem into your binary.
-
-It is intentionally boring in the best way: small structs, explicit interfaces, stdlib-first networking, and just enough agent loop to build real local apps like NullBot.
+It is intentionally boring: small structs, explicit interfaces, standard-library networking, and just enough agent loop to build real local apps.
 
 ## Packages
 
@@ -16,6 +17,7 @@ It is intentionally boring in the best way: small structs, explicit interfaces, 
 | `anthropic` | `github.com/Bradthebrad/tinychain/anthropic` | Anthropic Messages request/response structs plus a tiny HTTP client. |
 | `agent` | `github.com/Bradthebrad/tinychain/agent` | Minimal model/tool loop with skills, memory prompt injection, todo planning, subagent task delegation, and callback events. |
 | `mcp` | `github.com/Bradthebrad/tinychain/mcp` | Minimal MCP-style JSON-RPC protocol, stdio-first server/client transport, HTTP/SSE helpers, and adapters that expose MCP tools to agents. |
+| `streaming` | `github.com/Bradthebrad/tinychain/streaming` | Opt-in output deltas (text and reasoning summaries) carried through model calls, for live UIs. |
 
 The repository is one Go module, so consumers can build from a single clone or let `go mod` pull the tagged module automatically.
 
@@ -41,7 +43,7 @@ The client packages contain the data models and provider clients:
 | `openai` | Chat Completions and Responses API request/response structs plus a tiny HTTP client. |
 | `anthropic` | Anthropic Messages request/response structs plus a tiny HTTP client. |
 
-The OpenAI client defaults to `https://api.openai.com/v1`, but `BaseURL` is configurable for OpenAI-compatible providers.
+The OpenAI client defaults to `https://api.openai.com/v1`, but `BaseURL` is configurable for OpenAI-compatible providers, including servers on your own machine or network (Ollama, llama.cpp, LM Studio, vLLM). NullBot's planned local-model support builds on this.
 
 ## Agent
 
@@ -93,6 +95,47 @@ Agent features include:
 | Memory | Injects compact memory snippets into the system prompt. |
 | Subagents | Adds a task tool when subagents are configured, so a supervising agent can delegate focused work. |
 | Callbacks | Emits model/tool start, end, and error events suitable for live UIs and logs. |
+| Run control | `Config.Gate` is consulted before every model call and tool call. It can hold the run (pause), let it go on, or return `ErrWrapUp`: the run then makes no more tool calls, gives every requested call a result, and ends with one model reply saying what was done and what is left. Cancel the context to stop at once. |
+| Context management | Measures context use before every model call, counting tool definitions and rescaling by the input tokens the provider reports. Shortens tool results the model has seen from 60% of the window, summarizes older messages from 85%, and cuts any tool result that wouldn't fit to a preview with its size. See below. |
+
+## Context management
+
+Set `Config.Context` to manage a long run's context:
+
+```go
+agent.ContextPolicy{
+	Enabled:       true,
+	MaxTokens:     200000,                 // the model's context window
+	SoftRatio:     0.60,                   // shorten from here
+	HardRatio:     0.85,                   // summarize from here
+	PreserveTools: []string{"skill_read"}, // never shorten these results
+	Note:          "Full history is searchable with history_search.",
+}
+```
+
+Before every model call the agent estimates the request: messages plus tool
+definitions, at about four characters per token (an image as about 1,600),
+scaled by what the provider reported for the previous request (cache reads
+and writes included). The thresholds are fractions of the input room: the
+window less the larger of `ReserveTokens` and the model's own `max_tokens`
+(models that implement `OutputBudgeter` report it), because providers that
+count output against the window reject input that leaves less than that.
+
+| Tier | When | What happens |
+| --- | --- | --- |
+| Shorten | Usage at `SoftRatio` or more, or `MaxMessages` reached | Tool results the model has already seen become a digest: the tool, its arguments, the size of the output and its first `ToolDigestChars` characters. Long string arguments of earlier tool calls are cut to `ToolArgChars`. Oldest first, until usage is three quarters of `SoftRatio`. No model call. |
+| Summarize | Still at `HardRatio` or more | Older messages are replaced by a model-written summary, sent as a user message so the conversation still starts with one. About `RecentRatio` of the window stays word for word. The summary carries the request being worked on (its text, images and any later instructions) word for word, up to 15% of the window; skill results go into a system message later summaries leave alone; a later summary folds the earlier one in. Not run when what it would replace is under 5% of the window. |
+| Guard | Every tool result, as it arrives, whenever `MaxTokens` is set (even with `Enabled` off) | A result larger than the room left (counting what shortening could free), or than half the window, is cut to a preview with a notice giving its size and suggesting a smaller read. |
+
+A context-length error triggers both tiers and one retry. When the error names
+the real window ("maximum context length is 128000 tokens"), the agent uses
+that window for the rest of the run.
+
+`Agent.Compact` runs the same passes on demand, for a compaction a person asks
+for. Unlike the automatic pass, it fails without changing anything if the
+model can't write the summary. Callbacks report each pass as a `context_shorten` or `context_compaction`
+chain event, and every model start carries `context_tokens`,
+`context_window`, `shorten_at` and `summarize_at` in `Data.Extra`.
 
 ## MCP
 
@@ -112,16 +155,17 @@ This is intentionally not a full MCP kitchen sink. It is the smallest practical 
 
 ```text
 tinychain/
-  assets/
-    tinychain-hero.svg
-  anthropic/
-  callbacks/
-  lc/
-  openai/
-  agent/
+  agent/        model/tool loop, skills, memory, todos, subagents, run control, context
+  anthropic/    Anthropic Messages client
+  callbacks/    model and tool events
+  lc/           messages, content blocks, tool calls, generations
+  mcp/          MCP client, server, transports, agent adapter
+  openai/       Chat Completions and Responses client
+  streaming/    opt-in output deltas
   examples/
     openai_example_agent/
-  mcp/
+    openai_example_chat/
+  assets/       README graphics
 ```
 
 ## Tiny OpenAI Example Agent
@@ -130,7 +174,8 @@ The repo includes a baby-sized CLI REPL example that uses the `agent` and client
 
 ```powershell
 cd examples/openai_example_agent
-go run . -api-key sk-your-key
+$env:OPENAI_API_KEY = 'YOUR_OPENAI_API_KEY'
+go run .
 ```
 
 It defaults to `gpt-4o-mini` and supports:
@@ -154,7 +199,7 @@ There is also an even smaller direct chat REPL that skips the agent layer and ca
 
 ```powershell
 cd examples/openai_example_chat
-go run . -api-key sk-your-key
+go run .
 go build -trimpath -ldflags "-s -w" -o ..\..\openai_example_chat.exe .
 ```
 

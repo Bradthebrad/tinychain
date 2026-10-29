@@ -202,12 +202,17 @@ func (a *Agent) callModel(ctx context.Context, messages []lc.BaseMessage, runID 
 		modelCtx := ctx
 		if a.callbacks != nil {
 			modelCtx = streaming.WithSink(ctx, func(delta streaming.Delta) {
-				event := callbacks.LLMNewToken(runID, delta.Text)
-				if delta.Summary {
+				switch {
+				case delta.Step != nil:
+					a.callbacks.Handle(stepEvent(*delta.Step))
+				case delta.Commentary:
+					a.callbacks.Handle(callbacks.Event{Event: callbacks.EventLLMCommentary, RunID: runID, Data: callbacks.EventData{Token: delta.Text}})
+				case delta.Summary:
 					summaryStreamed = true
-					event = callbacks.LLMReasoning(runID, delta.Text)
+					a.callbacks.Handle(callbacks.LLMReasoning(runID, delta.Text))
+				default:
+					a.callbacks.Handle(callbacks.LLMNewToken(runID, delta.Text))
 				}
-				a.callbacks.Handle(event)
 			})
 		}
 		msg, err := a.model.Call(modelCtx, messages, tools)
@@ -229,6 +234,29 @@ func (a *Agent) callModel(ctx context.Context, messages []lc.BaseMessage, runID 
 		}
 		return messages, lc.BaseMessage{}, err
 	}
+}
+
+// stepEvent is the tool event for a step a model ran itself, shaped like
+// the events for the agent's own tool calls.
+func stepEvent(step streaming.Step) callbacks.Event {
+	event := callbacks.Event{
+		Event:    callbacks.EventToolStart,
+		Name:     step.Name,
+		RunID:    step.ID,
+		Time:     time.Now().UTC(),
+		Metadata: step.Metadata,
+		Data:     callbacks.EventData{Input: step.Input},
+	}
+	if step.Done {
+		event.Event = callbacks.EventToolEnd
+		event.Data.Output = step.Output
+		if step.Error != "" {
+			event.Event = callbacks.EventToolError
+			event.Data.Output = nil
+			event.Data.Error = step.Error
+		}
+	}
+	return event
 }
 
 func (a *Agent) finish(runID string, messages []lc.BaseMessage, msg lc.BaseMessage, steps int) *Result {

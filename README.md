@@ -17,7 +17,7 @@ It is intentionally boring: small structs, explicit interfaces, standard-library
 | `anthropic` | `github.com/Bradthebrad/tinychain/anthropic` | Anthropic Messages request/response structs plus a tiny HTTP client. |
 | `agent` | `github.com/Bradthebrad/tinychain/agent` | Minimal model/tool loop with skills, memory prompt injection, todo planning, subagent task delegation, and callback events. |
 | `mcp` | `github.com/Bradthebrad/tinychain/mcp` | Minimal MCP-style JSON-RPC protocol, stdio-first server/client transport, HTTP/SSE helpers, and adapters that expose MCP tools to agents. |
-| `streaming` | `github.com/Bradthebrad/tinychain/streaming` | Opt-in output deltas (text and reasoning summaries) carried through model calls, for live UIs. |
+| `streaming` | `github.com/Bradthebrad/tinychain/streaming` | Opt-in output deltas (text, reasoning summaries, commentary, and the tool steps of a model that runs its own tools) carried through model calls, for live UIs. |
 
 The repository is one Go module, so consumers can build from a single clone or let `go mod` pull the tagged module automatically.
 

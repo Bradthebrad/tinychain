@@ -57,6 +57,19 @@ type ContentBlock struct {
 	Citations any            `json:"citations,omitempty"`
 }
 
+// MarshalJSON always sends a tool_use block's input, which the API requires,
+// even for a call without arguments.
+func (b ContentBlock) MarshalJSON() ([]byte, error) {
+	type alias ContentBlock
+	if b.Type != "tool_use" || len(b.Input) > 0 {
+		return jsonMarshal(alias(b))
+	}
+	return jsonMarshal(struct {
+		alias
+		Input map[string]any `json:"input"`
+	}{alias(b), map[string]any{}})
+}
+
 type Tool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
@@ -214,7 +227,7 @@ func contentFromLC(msg lc.BaseMessage) ContentList {
 		return ContentList{Blocks: []ContentBlock{{
 			Type:      "tool_result",
 			ToolUseID: msg.ToolCallID,
-			Content:   textOrParts(msg.Content),
+			Content:   toolResultContent(msg.Content),
 		}}}
 	}
 	if msg.Content.Text != nil && len(msg.ToolCalls) == 0 {
@@ -298,6 +311,40 @@ func partsFromAnthropic(blocks []ContentBlock) []lc.ContentPart {
 		parts = append(parts, part)
 	}
 	return parts
+}
+
+// toolResultContent is a tool_result's content: a string, or for a result
+// with images, text and image blocks. Empty text blocks, which the API
+// rejects, are left out.
+func toolResultContent(content lc.Content) any {
+	if content.Text != nil || !hasImagePart(content.Parts) {
+		return textOrParts(content)
+	}
+	blocks := make([]ContentBlock, 0, len(content.Parts))
+	for _, part := range content.Parts {
+		switch {
+		case part.Type == "text":
+			if part.Text != "" {
+				blocks = append(blocks, ContentBlock{Type: "text", Text: part.Text})
+			}
+		case part.Type == "image" && part.Source != nil && part.Source.Data != "":
+			blocks = append(blocks, ContentBlock{Type: "image", Source: lc.ContentSource{Type: "base64", MediaType: part.Source.MediaType, Data: part.Source.Data}})
+		case part.Type == "image" && part.Source != nil && part.Source.URL != "":
+			blocks = append(blocks, ContentBlock{Type: "image", Source: lc.ContentSource{Type: "url", URL: part.Source.URL}})
+		default:
+			blocks = append(blocks, blockFromLC(part))
+		}
+	}
+	return blocks
+}
+
+func hasImagePart(parts []lc.ContentPart) bool {
+	for _, part := range parts {
+		if part.Type == "image" && part.Source != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func textOrParts(content lc.Content) any {

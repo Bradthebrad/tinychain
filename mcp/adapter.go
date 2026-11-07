@@ -38,7 +38,9 @@ func AgentTool(client *Client, tool Tool) agent.Tool {
 	return &RemoteTool{Client: client, Spec: tool}
 }
 
-// RemoteTool is an agent.Tool backed by an MCP server.
+// RemoteTool is an agent.Tool backed by an MCP server. It implements
+// agent.ContentTool, so the agent sends the images in its results to the
+// model; Call and CallWithMeta describe them in the text instead.
 type RemoteTool struct {
 	Client      *Client
 	Spec        Tool
@@ -80,6 +82,28 @@ func (t *RemoteTool) CallWithMeta(ctx context.Context, args map[string]any) (str
 	return text, meta, nil
 }
 
+// CallContent returns the result's text and images for the model, plus the
+// summary CallWithMeta returns. See ResultContent for how blocks convert.
+func (t *RemoteTool) CallContent(ctx context.Context, args map[string]any) (agent.ToolOutput, error) {
+	if t.Client == nil {
+		return agent.ToolOutput{}, errors.New("mcp: tool has no client")
+	}
+	result, err := t.Client.CallTool(ctx, t.Spec.Name, args)
+	if err != nil {
+		return agent.ToolOutput{}, err
+	}
+	if result.IsError {
+		text := ResultText(result)
+		if strings.TrimSpace(text) == "" {
+			text = "tool reported an error"
+		}
+		return agent.ToolOutput{Meta: ResultMeta(result)}, errors.New(text)
+	}
+	out := ResultContent(result)
+	out.Meta = ResultMeta(result)
+	return out, nil
+}
+
 func (t *RemoteTool) ToolInfo() agent.ToolInfo {
 	info := agent.ToolInfo{
 		Title:       t.Spec.DisplayTitle(),
@@ -103,11 +127,18 @@ func ToolFromAgent(tool agent.Tool) Tool {
 		Description: def.Description,
 		InputSchema: def.ArgsSchema,
 		Handler: func(ctx context.Context, args map[string]any) (ToolResult, error) {
-			out, err := tool.Call(ctx, args)
+			out, err := agent.CallToolContent(ctx, tool, args)
 			if err != nil {
 				return ToolResult{Content: []Content{{Type: "text", Text: err.Error()}}, IsError: true}, nil
 			}
-			return Text(out), nil
+			result := Text(out.Text)
+			if out.Text == "" && len(out.Images) > 0 {
+				result.Content = nil
+			}
+			for _, img := range out.Images {
+				result.Content = append(result.Content, Content{Type: "image", Data: img.Data, MimeType: img.MediaType})
+			}
+			return result, nil
 		},
 	}
 	if info, ok := agent.InfoOf(tool); ok {
@@ -139,23 +170,8 @@ func ToolFromLangChain(def lc.ToolDefinition, handler func(context.Context, map[
 func ResultText(result ToolResult) string {
 	parts := make([]string, 0, len(result.Content))
 	for _, content := range result.Content {
-		switch content.Type {
-		case "text":
-			if content.Text != "" {
-				parts = append(parts, content.Text)
-			}
-		case "image", "audio":
-			parts = append(parts, fmt.Sprintf("[%s %s, %s]", content.Type, firstNonEmptyString(content.MimeType, "data"), approxBytes(len(content.Data)*3/4)))
-		case "resource_link":
-			parts = append(parts, fmt.Sprintf("[resource %s %s]", firstNonEmptyString(content.Name, "link"), content.URI))
-		case "resource":
-			if content.Resource != nil {
-				if content.Resource.Text != "" {
-					parts = append(parts, content.Resource.Text)
-				} else {
-					parts = append(parts, fmt.Sprintf("[resource %s %s]", content.Resource.URI, content.Resource.MimeType))
-				}
-			}
+		if text := blockText(content); text != "" {
+			parts = append(parts, text)
 		}
 	}
 	if len(parts) == 0 && result.StructuredContent != nil {
@@ -164,6 +180,53 @@ func ResultText(result ToolResult) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// ResultContent renders a tool result for a model that can see images. Image
+// blocks become images when agent.CheckToolImages accepts them: PNG, JPEG,
+// GIF or WebP, up to agent.MaxToolImageBytes decoded, at most
+// agent.MaxToolImagesPerResult per result. Other image blocks get a
+// placeholder saying why they weren't sent, after the text. Every other
+// block reads as it does in ResultText.
+func ResultContent(result ToolResult) agent.ToolOutput {
+	parts := make([]string, 0, len(result.Content))
+	var images []agent.ToolImage
+	for _, content := range result.Content {
+		if content.Type == "image" {
+			images = append(images, agent.ToolImage{MediaType: content.MimeType, Data: content.Data})
+			continue
+		}
+		if text := blockText(content); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	if len(parts) == 0 && len(images) == 0 && result.StructuredContent != nil {
+		if data, err := json.Marshal(result.StructuredContent); err == nil {
+			parts = append(parts, string(data))
+		}
+	}
+	kept, notes := agent.CheckToolImages(images)
+	return agent.ToolOutput{Text: strings.Join(append(parts, notes...), "\n"), Images: kept}
+}
+
+// blockText is how one content block reads in a model's text.
+func blockText(content Content) string {
+	switch content.Type {
+	case "text":
+		return content.Text
+	case "image", "audio":
+		return fmt.Sprintf("[%s %s, %s]", content.Type, firstNonEmptyString(content.MimeType, "data"), approxBytes(len(content.Data)*3/4))
+	case "resource_link":
+		return fmt.Sprintf("[resource %s %s]", firstNonEmptyString(content.Name, "link"), content.URI)
+	case "resource":
+		if content.Resource != nil {
+			if content.Resource.Text != "" {
+				return content.Resource.Text
+			}
+			return fmt.Sprintf("[resource %s %s]", content.Resource.URI, content.Resource.MimeType)
+		}
+	}
+	return ""
 }
 
 // ResultMeta summarizes a result's shape without copying its payload.

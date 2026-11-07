@@ -876,9 +876,10 @@ func (a *Agent) shouldCompactAfterError(err error) bool {
 
 // guardToolOutput checks a tool result against the room left. A result that
 // wouldn't fit is cut to a preview with a notice giving its size, so the
-// model can choose a smaller read. It returns the text to send and, when it
-// cut anything, what it measured.
-func (a *Agent) guardToolOutput(messages []lc.BaseMessage, output string) (string, map[string]any) {
+// model can choose a smaller read. imageTokens is what the result's images
+// take, which leaves less room for its text. It returns the text to send and,
+// when it cut anything, what it measured.
+func (a *Agent) guardToolOutput(messages []lc.BaseMessage, output string, imageTokens int) (string, map[string]any) {
 	m := a.meter
 	if m == nil || m.limit <= 0 || output == "" {
 		return output, nil
@@ -892,7 +893,7 @@ func (a *Agent) guardToolOutput(messages []lc.BaseMessage, output string) (strin
 		// Shortening will free this before the next model call.
 		used -= m.reclaimable(messages)
 	}
-	free := m.limit - m.reserve - used
+	free := m.limit - m.reserve - used - m.scaled(imageTokens)
 	allowed := minInt(free, m.limit/2)
 	if size <= allowed {
 		return output, nil
@@ -934,8 +935,10 @@ func EstimateTokens(messages []lc.BaseMessage) int {
 	return total
 }
 
-// imagePartTokens is a typical cost of one image. Counting its base64 data
-// as text would overstate it a hundredfold.
+// imagePartTokens is what one image is counted as, whatever its size: about
+// what providers charge for a screenshot-sized image (Anthropic charges
+// width*height/750 tokens, up to about 1,600 once it scales the image down).
+// Counting its base64 data as text would overstate it a hundredfold.
 const imagePartTokens = 1600
 
 func EstimateContentTokens(content lc.Content) int {
@@ -1076,6 +1079,9 @@ func formatMessagesForCompaction(messages []lc.BaseMessage, policy ContextPolicy
 			text = truncateRunes(text, maxInt(4000, perTool/2))
 		}
 		b.WriteString(text)
+		if n := imageCount(msg.Content); n > 0 {
+			fmt.Fprintf(&b, "\n[%d image(s), not shown]", n)
+		}
 		if len(msg.ToolCalls) > 0 {
 			data, _ := json.Marshal(msg.ToolCalls)
 			b.WriteString("\nTool calls: ")

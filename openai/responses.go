@@ -1,6 +1,10 @@
 package openai
 
-import "github.com/Bradthebrad/tinychain/lc"
+import (
+	"encoding/json"
+
+	"github.com/Bradthebrad/tinychain/lc"
+)
 
 type ResponsesRequest struct {
 	Model              string          `json:"model"`
@@ -39,9 +43,10 @@ func MessageInput(messages []lc.BaseMessage) ResponsesInput {
 		role := openAIRole(msg.Type)
 		if role == "tool" {
 			items = append(items, ResponsesInputItem{
-				Type:   "function_call_output",
-				CallID: msg.ToolCallID,
-				Output: contentText(msg.Content),
+				Type:          "function_call_output",
+				CallID:        msg.ToolCallID,
+				Output:        contentText(msg.Content),
+				OutputContent: functionOutputContent(msg.Content),
 			})
 			continue
 		}
@@ -88,6 +93,25 @@ func responsesContent(role string, content lc.Content) []ResponsesContent {
 	return out
 }
 
+// functionOutputContent is a function_call_output's output for a tool result
+// with images: its text and images in order. It is nil for a result without
+// images, whose output stays a string.
+func functionOutputContent(content lc.Content) []ResponsesContent {
+	if content.Text != nil {
+		return nil
+	}
+	hasImage := false
+	for _, part := range content.Parts {
+		if part.Type == "image" && part.Source != nil {
+			hasImage = true
+		}
+	}
+	if !hasImage {
+		return nil
+	}
+	return responsesContent("user", content)
+}
+
 type ResponsesInputItem struct {
 	Type      string             `json:"type"`
 	Role      string             `json:"role,omitempty"`
@@ -97,7 +121,61 @@ type ResponsesInputItem struct {
 	Name      string             `json:"name,omitempty"`
 	Arguments string             `json:"arguments,omitempty"`
 	Input     map[string]any     `json:"input,omitempty"`
-	Output    string             `json:"output,omitempty"`
+	// Output is a function_call_output's text.
+	Output string `json:"output,omitempty"`
+	// OutputContent, when set, is sent as the output instead of Output: an
+	// array of input_text and input_image parts, for a result with images.
+	OutputContent []ResponsesContent `json:"-"`
+}
+
+// MarshalJSON sends OutputContent, when set, as the output array, and always
+// sends a function_call_output's output, even an empty one.
+func (i ResponsesInputItem) MarshalJSON() ([]byte, error) {
+	type alias ResponsesInputItem
+	switch {
+	case len(i.OutputContent) > 0:
+		return jsonMarshal(struct {
+			alias
+			Output []ResponsesContent `json:"output"`
+		}{alias(i), i.OutputContent})
+	case i.Type == "function_call_output":
+		return jsonMarshal(struct {
+			alias
+			Output string `json:"output"`
+		}{alias(i), i.Output})
+	default:
+		return jsonMarshal(alias(i))
+	}
+}
+
+// UnmarshalJSON reads an output given as a string into Output and one given
+// as an array into OutputContent, with its text also in Output.
+func (i *ResponsesInputItem) UnmarshalJSON(data []byte) error {
+	type alias ResponsesInputItem
+	var raw struct {
+		alias
+		Output json.RawMessage `json:"output,omitempty"`
+	}
+	if err := jsonUnmarshal(data, &raw); err != nil {
+		return err
+	}
+	*i = ResponsesInputItem(raw.alias)
+	if len(raw.Output) == 0 || string(raw.Output) == "null" {
+		return nil
+	}
+	if err := jsonUnmarshal(raw.Output, &i.Output); err == nil {
+		return nil
+	}
+	if err := jsonUnmarshal(raw.Output, &i.OutputContent); err != nil {
+		return err
+	}
+	for _, part := range i.OutputContent {
+		if part.Text != "" {
+			i.Output = part.Text
+			break
+		}
+	}
+	return nil
 }
 
 type ResponsesContent struct {

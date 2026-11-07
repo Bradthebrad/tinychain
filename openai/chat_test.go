@@ -105,3 +105,32 @@ func TestClientRetriesTransientStatus(t *testing.T) {
 		t.Fatalf("content = %q", got)
 	}
 }
+
+func TestChatMessagesSendToolImagesAfterTheTurnsToolMessages(t *testing.T) {
+	image := lc.ContentPart{Type: "image", Source: &lc.ContentSource{Type: "base64", MediaType: "image/png", Data: "abc"}}
+	messages := ChatMessages([]lc.BaseMessage{
+		lc.Human("look"),
+		{Type: lc.RoleAI, ToolCalls: []lc.ToolCall{{ID: "c1", Name: "screenshot"}, {ID: "c2", Name: "read"}}},
+		{Type: lc.RoleTool, ToolCallID: "c1", Content: lc.PartsContent(lc.ContentPart{Type: "text", Text: "shot"}, image)},
+		{Type: lc.RoleTool, ToolCallID: "c2", Content: lc.PartsContent(lc.ContentPart{Type: "text", Text: "a"}, lc.ContentPart{Type: "text", Text: "b"})},
+		lc.Human("and now?"),
+		{Type: lc.RoleAI, ToolCalls: []lc.ToolCall{{ID: "c3", Name: "screenshot"}}},
+		{Type: lc.RoleTool, ToolCallID: "c3", Content: lc.PartsContent(image)},
+	})
+	data, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"role":"user","content":"look"},` +
+		`{"role":"assistant","content":[],"tool_calls":[{"id":"c1","type":"function","function":{"name":"screenshot","arguments":"null"}},{"id":"c2","type":"function","function":{"name":"read","arguments":"null"}}]},` +
+		`{"role":"tool","content":"shot","tool_call_id":"c1"},` +
+		`{"role":"tool","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}],"tool_call_id":"c2"},` +
+		`{"role":"user","content":[{"type":"text","text":"Image from tool screenshot (call c1):"},{"image_url":{"url":"data:image/png;base64,abc"},"type":"image_url"}]},` +
+		`{"role":"user","content":"and now?"},` +
+		`{"role":"assistant","content":[],"tool_calls":[{"id":"c3","type":"function","function":{"name":"screenshot","arguments":"null"}}]},` +
+		`{"role":"tool","content":"[The image is in the next message.]","tool_call_id":"c3"},` +
+		`{"role":"user","content":[{"type":"text","text":"Image from tool screenshot (call c3):"},{"image_url":{"url":"data:image/png;base64,abc"},"type":"image_url"}]}]`
+	if string(data) != want {
+		t.Fatalf("messages\n got %s\nwant %s", data, want)
+	}
+}

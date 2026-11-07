@@ -98,6 +98,13 @@ content types), which the agent forwards on tool callbacks as `Metadata` and
 `Data.Extra["result_meta"]`, along with `Data.Extra["duration_ms"]`. A result
 with `isError: true` is returned to the agent as an error.
 
+They also implement `agent.ContentTool`, so the model sees the images a tool
+returns, such as a computer-use screenshot. `mcp.ResultContent` does the
+conversion: PNG, JPEG, GIF and WebP image blocks of up to 5 MB, at most 4 per
+result, become images, and other blocks read as in `mcp.ResultText`, which
+`Call` and `CallWithMeta` still use. In the other direction, `ToolFromAgent`
+serves the images of an `agent.ContentTool` as image blocks.
+
 ## Client Transport Behavior
 
 - **stdio** (`NewStdioClientWithOptions`): requests are multiplexed and matched

@@ -135,3 +135,18 @@ func TestToolResultsCarryImageBlocks(t *testing.T) {
 		t.Fatalf("messages\n got %s\nwant %s", data, want)
 	}
 }
+
+func TestToolUseWithoutArgumentsSendsAnEmptyInput(t *testing.T) {
+	data, err := json.Marshal(Messages([]lc.BaseMessage{{Type: lc.RoleAI, ToolCalls: []lc.ToolCall{{ID: "t1", Name: "screenshot"}, {ID: "t2", Name: "read", Args: map[string]any{"path": "a"}}}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"screenshot","input":{}},{"type":"tool_use","id":"t2","name":"read","input":{"path":"a"}}]}]`
+	if string(data) != want {
+		t.Fatalf("messages\n got %s\nwant %s", data, want)
+	}
+	text, _ := json.Marshal(ContentBlock{Type: "text", Text: "hi"})
+	if string(text) != `{"type":"text","text":"hi"}` {
+		t.Fatalf("text block = %s", text)
+	}
+}

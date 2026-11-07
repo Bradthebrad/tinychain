@@ -289,7 +289,7 @@ func TestAnthropicSendsToolImagesInToolResult(t *testing.T) {
 	if got := compactJSON(t, req.Messages[2]); got != want {
 		t.Fatalf("tool result message\n got %s\nwant %s", got, want)
 	}
-	if got := compactJSON(t, req.Messages[1]); got != `{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"screenshot"}]}` {
+	if got := compactJSON(t, req.Messages[1]); got != `{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"screenshot","input":{}}]}` {
 		t.Fatalf("assistant message = %s", got)
 	}
 }

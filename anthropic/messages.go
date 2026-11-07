@@ -57,6 +57,19 @@ type ContentBlock struct {
 	Citations any            `json:"citations,omitempty"`
 }
 
+// MarshalJSON always sends a tool_use block's input, which the API requires,
+// even for a call without arguments.
+func (b ContentBlock) MarshalJSON() ([]byte, error) {
+	type alias ContentBlock
+	if b.Type != "tool_use" || len(b.Input) > 0 {
+		return jsonMarshal(alias(b))
+	}
+	return jsonMarshal(struct {
+		alias
+		Input map[string]any `json:"input"`
+	}{alias(b), map[string]any{}})
+}
+
 type Tool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`

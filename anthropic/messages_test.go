@@ -111,3 +111,27 @@ func TestToolCallsAreSentOnce(t *testing.T) {
 		t.Fatalf("%d tool_use blocks for one call", count)
 	}
 }
+
+func TestToolResultsCarryImageBlocks(t *testing.T) {
+	messages := Messages([]lc.BaseMessage{
+		lc.Tool("t1", "plain"),
+		{Type: lc.RoleTool, ToolCallID: "t2", Content: lc.PartsContent(lc.ContentPart{Type: "text", Text: "a"}, lc.ContentPart{Type: "text", Text: "b"})},
+		{Type: lc.RoleTool, ToolCallID: "t3", Content: lc.PartsContent(
+			lc.ContentPart{Type: "text", Text: ""},
+			lc.ContentPart{Type: "image", Source: &lc.ContentSource{Type: "base64", MediaType: "image/png", Data: "abc"}},
+			lc.ContentPart{Type: "image", Source: &lc.ContentSource{URL: "https://example.com/a.png"}},
+		)},
+	})
+	data, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"plain"}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","content":[` +
+		`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"abc"}},` +
+		`{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]}]}]`
+	if string(data) != want {
+		t.Fatalf("messages\n got %s\nwant %s", data, want)
+	}
+}

@@ -87,3 +87,39 @@ func TestMessageInputTranslatesImageParts(t *testing.T) {
 		t.Fatalf("image content = %#v", items[0].Content[1])
 	}
 }
+
+func TestFunctionCallOutputCarriesImages(t *testing.T) {
+	input := MessageInput([]lc.BaseMessage{
+		{Type: lc.RoleAI, ToolCalls: []lc.ToolCall{{ID: "c1", Name: "screenshot"}, {ID: "c2", Name: "noop"}}},
+		{Type: lc.RoleTool, ToolCallID: "c1", Content: lc.PartsContent(
+			lc.ContentPart{Type: "text", Text: "shot"},
+			lc.ContentPart{Type: "image", Source: &lc.ContentSource{Type: "base64", MediaType: "image/png", Data: "abc"}},
+		)},
+		lc.Tool("c2", ""),
+	})
+	data, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"type":"function_call","call_id":"c1","name":"screenshot","arguments":"null"},` +
+		`{"type":"function_call","call_id":"c2","name":"noop","arguments":"null"},` +
+		`{"type":"function_call_output","call_id":"c1","output":[{"type":"input_text","text":"shot"},{"type":"input_image","image_url":"data:image/png;base64,abc"}]},` +
+		`{"type":"function_call_output","call_id":"c2","output":""}]`
+	if string(data) != want {
+		t.Fatalf("input\n got %s\nwant %s", data, want)
+	}
+	var back ResponsesInput
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Items[2]; got.Output != "shot" || len(got.OutputContent) != 2 || got.OutputContent[1].ImageURL != "data:image/png;base64,abc" {
+		t.Fatalf("decoded = %#v", got)
+	}
+	if got := back.Items[3]; got.Output != "" || got.OutputContent != nil || got.CallID != "c2" {
+		t.Fatalf("decoded = %#v", got)
+	}
+	again, _ := json.Marshal(back)
+	if string(again) != want {
+		t.Fatalf("round trip = %s", again)
+	}
+}

@@ -2,6 +2,8 @@ package openai
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/Bradthebrad/tinychain/lc"
 )
@@ -98,15 +100,48 @@ type Usage struct {
 	OutputTokensDetails     map[string]int `json:"output_tokens_details,omitempty"`
 }
 
+// ChatMessages converts messages for Chat Completions. Tool messages can't
+// carry images there, so a tool result's images are sent in a user message
+// after the turn's last tool message, each one introduced by a text part
+// naming the tool call; the tool message keeps the text.
 func ChatMessages(messages []lc.BaseMessage) []ChatMessage {
 	out := make([]ChatMessage, 0, len(messages))
+	var names map[string]string
+	var images []lc.ContentPart
+	flush := func() {
+		if len(images) > 0 {
+			out = append(out, ChatMessage{Role: "user", Content: lc.PartsContent(images...)})
+			images = nil
+		}
+	}
 	for _, msg := range messages {
+		if msg.Type != lc.RoleTool {
+			flush()
+		}
 		chat := ChatMessage{
 			Role:       openAIRole(msg.Type),
 			Content:    openAIContent(msg.Content),
 			Name:       msg.Name,
 			ToolCallID: msg.ToolCallID,
 			ToolCalls:  openAIToolCalls(msg.ToolCalls),
+		}
+		if msg.Type == lc.RoleTool {
+			if text, found := splitToolImages(msg.Content); len(found) > 0 {
+				if names == nil {
+					names = toolCallNames(messages)
+				}
+				chat.Content = lc.TextContent(text)
+				if text == "" {
+					chat.Content = lc.TextContent(nextMessageNote(len(found)))
+				}
+				name := names[msg.ToolCallID]
+				if name == "" {
+					name = msg.Name
+				}
+				for _, image := range found {
+					images = append(images, lc.ContentPart{Type: "text", Text: fmt.Sprintf("Image from tool %s (call %s):", name, msg.ToolCallID)}, image)
+				}
+			}
 		}
 		if msg.AdditionalKwargs != nil {
 			chat.Reasoning = stringKwarg(msg.AdditionalKwargs, "reasoning")
@@ -115,7 +150,45 @@ func ChatMessages(messages []lc.BaseMessage) []ChatMessage {
 		}
 		out = append(out, chat)
 	}
+	flush()
 	return out
+}
+
+// splitToolImages separates a tool result's text from its images, the
+// images already in Chat Completions form.
+func splitToolImages(content lc.Content) (string, []lc.ContentPart) {
+	if content.Text != nil {
+		return *content.Text, nil
+	}
+	var texts []string
+	var images []lc.ContentPart
+	for _, part := range openAIContent(content).Parts {
+		if part.Type == "image_url" {
+			images = append(images, part)
+			continue
+		}
+		if part.Text != "" {
+			texts = append(texts, part.Text)
+		}
+	}
+	return strings.Join(texts, "\n"), images
+}
+
+func nextMessageNote(images int) string {
+	if images == 1 {
+		return "[The image is in the next message.]"
+	}
+	return fmt.Sprintf("[The %d images are in the next message.]", images)
+}
+
+func toolCallNames(messages []lc.BaseMessage) map[string]string {
+	names := map[string]string{}
+	for _, msg := range messages {
+		for _, call := range msg.ToolCalls {
+			names[call.ID] = call.Name
+		}
+	}
+	return names
 }
 
 func openAIContent(content lc.Content) lc.Content {

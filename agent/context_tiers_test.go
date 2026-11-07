@@ -302,11 +302,11 @@ func TestGuardCountsSpaceShorteningCouldFree(t *testing.T) {
 	messages = append(messages, lc.BaseMessage{Type: lc.RoleAI, ToolCalls: []lc.ToolCall{{ID: "next", Name: "read", Args: map[string]any{}}}})
 	// About 4,100 tokens used, but 3,600 of them can be shortened away, so
 	// a 2,000-token result fits.
-	out, guard := agent.guardToolOutput(messages, strings.Repeat("y", 8000))
+	out, guard := agent.guardToolOutput(messages, strings.Repeat("y", 8000), 0)
 	if guard != nil || len(out) != 8000 {
 		t.Fatalf("result cut although shortening frees room: %v", guard)
 	}
-	out, guard = agent.guardToolOutput(messages, strings.Repeat("y", 40000))
+	out, guard = agent.guardToolOutput(messages, strings.Repeat("y", 40000), 0)
 	if guard == nil || !strings.Contains(out, "Context guard: the full result is about 10,001 tokens (40,000 characters)") {
 		t.Fatalf("oversized result not cut: %v %q", guard, out[len(out)-300:])
 	}
@@ -400,7 +400,7 @@ func TestGuardWithCompactionOffDoesNotCountOnShortening(t *testing.T) {
 			lc.Tool(id, strings.Repeat("x", 4000)))
 	}
 	messages = append(messages, lc.BaseMessage{Type: lc.RoleAI, ToolCalls: []lc.ToolCall{{ID: "next", Name: "read", Args: map[string]any{}}}})
-	out, guard := agent.guardToolOutput(messages, strings.Repeat("y", 10000))
+	out, guard := agent.guardToolOutput(messages, strings.Repeat("y", 10000), 0)
 	if guard == nil {
 		t.Fatal("nothing will shorten earlier results, so this one must be cut")
 	}

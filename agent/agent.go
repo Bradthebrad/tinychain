@@ -28,6 +28,9 @@ type Config struct {
 	// Gate, when set, is consulted before every model call and every tool
 	// call. It can hold a run (pause), let it go on, or ask it to wrap up.
 	Gate StepGate
+	// ToolImages controls images that tools return (see ContentTool): by
+	// default the three most recent are sent to the model.
+	ToolImages ToolImagePolicy
 }
 
 // StepGate lets a host control a run between steps. Wait returns nil to go
@@ -57,6 +60,7 @@ type Agent struct {
 	callbacks     callbacks.Sink
 	context       ContextPolicy
 	gate          StepGate
+	toolImages    ToolImagePolicy
 	// meter measures context use for one run; scopedRun copies the agent,
 	// so each run has its own.
 	meter *contextMeter
@@ -80,6 +84,7 @@ func New(config Config) *Agent {
 		callbacks:     config.Callbacks,
 		context:       normalizeContextPolicy(config.Context),
 		gate:          config.Gate,
+		toolImages:    config.ToolImages,
 	}
 	if a.maxIterations == 0 {
 		a.maxIterations = DefaultMaxIterations
@@ -88,7 +93,7 @@ func New(config Config) *Agent {
 		a.AddTool(tool)
 	}
 	if len(config.Subagents) > 0 {
-		a.AddTool(taskTool(config.Subagents, config.Gate))
+		a.AddTool(taskTool(config.Subagents, config.Gate, config.ToolImages))
 	}
 	return a
 }
@@ -189,10 +194,12 @@ func (a *Agent) invokeMessages(ctx context.Context, input []lc.BaseMessage, inbo
 func (a *Agent) callModel(ctx context.Context, messages []lc.BaseMessage, runID string, tools []Tool) ([]lc.BaseMessage, lc.BaseMessage, error) {
 	compactedForRetry := false
 	for {
+		messages = keepRecentToolImages(messages, a.toolImages.keep())
 		messages = a.fitContext(ctx, messages, runID, false)
 		sentRaw := a.meter.raw(messages)
 		if a.callbacks != nil {
-			event := callbacks.ChatModelStart("agent", runID, [][]lc.BaseMessage{messages})
+			// Callbacks get no image data, which would bloat logs and history.
+			event := callbacks.ChatModelStart("agent", runID, [][]lc.BaseMessage{withoutToolImages(messages)})
 			if a.context.Enabled || a.context.MaxTokens > 0 {
 				event.Data.Extra = a.meter.snapshot(a.meter.scaled(sentRaw))
 			}
@@ -265,7 +272,9 @@ func (a *Agent) finish(runID string, messages []lc.BaseMessage, msg lc.BaseMessa
 			Generations: [][]lc.ChatGeneration{{{Message: msg}}},
 		}))
 	}
-	return &Result{Messages: messages, Output: msg, Steps: steps}
+	// Images from tools are replaced by placeholders, so a saved result
+	// doesn't carry their data.
+	return &Result{Messages: withoutToolImages(messages), Output: msg, Steps: steps}
 }
 
 func (a *Agent) waitGate(ctx context.Context) error {
@@ -353,20 +362,13 @@ func (a *Agent) executeTool(ctx context.Context, call lc.ToolCall, messages []lc
 		})
 	}
 	toolCtx := WithToolCallID(ctx, call.ID)
-	var output string
-	var resultMeta map[string]any
-	var err error
-	if rich, ok := tool.(MetaTool); ok {
-		output, resultMeta, err = rich.CallWithMeta(toolCtx, call.Args)
-	} else {
-		output, err = tool.Call(toolCtx, call.Args)
-	}
+	result, err := CallToolContent(toolCtx, tool, call.Args)
 	extra := map[string]any{"duration_ms": time.Since(started).Milliseconds()}
-	if len(resultMeta) > 0 {
-		extra["result_meta"] = resultMeta
+	if len(result.Meta) > 0 {
+		extra["result_meta"] = result.Meta
 	}
 	if err != nil {
-		text, guard := a.guardToolOutput(messages, err.Error())
+		text, guard := a.guardToolOutput(messages, err.Error(), 0)
 		if guard != nil {
 			extra["context_guard"] = guard
 		}
@@ -387,7 +389,11 @@ func (a *Agent) executeTool(ctx context.Context, call lc.ToolCall, messages []lc
 			Status:     "error",
 		}
 	}
-	output, guard := a.guardToolOutput(messages, output)
+	images, notes, imageInfo := a.toolResultImages(result.Images)
+	if imageInfo != nil {
+		extra["images"] = imageInfo
+	}
+	output, guard := a.guardToolOutput(messages, joinLines(append([]string{result.Text}, notes...)...), len(images)*imagePartTokens)
 	if guard != nil {
 		extra["context_guard"] = guard
 	}
@@ -398,13 +404,14 @@ func (a *Agent) executeTool(ctx context.Context, call lc.ToolCall, messages []lc
 			RunID:    call.ID,
 			Time:     time.Now().UTC(),
 			Metadata: metadata,
-			Data:     callbacks.EventData{Input: call.Args, Output: output, Extra: extra},
+			// The images themselves stay out of callbacks.
+			Data: callbacks.EventData{Input: call.Args, Output: joinLines(output, DescribeImages(images)), Extra: extra},
 		})
 	}
 	return lc.BaseMessage{
 		Type:       lc.RoleTool,
 		ToolCallID: call.ID,
-		Content:    lc.TextContent(output),
+		Content:    toolResultContent(output, images),
 		Status:     "success",
 	}
 }

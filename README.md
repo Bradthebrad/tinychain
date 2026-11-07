@@ -97,6 +97,7 @@ Agent features include:
 | Callbacks | Emits model/tool start, end, and error events suitable for live UIs and logs. |
 | Run control | `Config.Gate` is consulted before every model call and tool call. It can hold the run (pause), let it go on, or return `ErrWrapUp`: the run then makes no more tool calls, gives every requested call a result, and ends with one model reply saying what was done and what is left. Cancel the context to stop at once. |
 | Context management | Measures context use before every model call, counting tool definitions and rescaling by the input tokens the provider reports. Shortens tool results the model has seen from 60% of the window, summarizes older messages from 85%, and cuts any tool result that wouldn't fit to a preview with its size. See below. |
+| Tool images | Tools can return images, such as a computer-use screenshot, and the model sees them. The three most recent are sent with each call. See below. |
 
 ## Context management
 
@@ -137,6 +138,64 @@ model can't write the summary. Callbacks report each pass as a `context_shorten`
 chain event, and every model start carries `context_tokens`,
 `context_window`, `shorten_at` and `summarize_at` in `Data.Extra`.
 
+## Tools that return images
+
+A tool that implements `agent.ContentTool` can return images with its text:
+
+```go
+type ContentTool interface {
+	Tool
+	CallContent(ctx context.Context, args map[string]any) (ToolOutput, error)
+}
+
+type ToolOutput struct {
+	Text   string         // what the model reads
+	Images []ToolImage    // {MediaType, Data}: base64 PNG, JPEG, GIF or WebP
+	Meta   map[string]any // optional summary for activity displays
+}
+```
+
+MCP tools (`*mcp.RemoteTool`) implement it: image blocks become images, and
+every other block reads as before. Plain `Tool`s work as they always have. A
+wrapper around a tool, for permission checks or logging, should implement
+`CallContent` too and forward with `agent.CallToolContent(ctx, inner, args)`,
+which calls `CallContent`, `CallWithMeta` or `Call`, whichever the tool has.
+
+Each result can send up to 4 images (`MaxToolImagesPerResult`) of up to 5 MB
+each, decoded (`MaxToolImageBytes`). The media type is taken from the image
+data, since providers reject a mismatch. An image that fails these checks is
+left out, and the text gets a line such as `[image image/svg+xml, 3 KB, not
+shown: not a PNG, JPEG, GIF or WebP image]`.
+
+How each provider gets them:
+
+| Provider | Form |
+| --- | --- |
+| Anthropic Messages | `tool_result` content is a list of `text` and `image` blocks (base64 source). |
+| OpenAI Responses | `function_call_output` output is a list of `input_text` and `input_image` (data URI) parts. |
+| OpenAI Chat Completions | Tool messages can only carry text, so each tool message keeps its text, and after the turn's last tool message one `user` message carries the images as `image_url` data URIs, each after a line such as `Image from tool screenshot (call call_1):`. |
+
+Images are large, so only the most recent are sent with each model call;
+older ones become `[earlier image from screenshot omitted]`. Context
+estimates count each image as 1,600 tokens whatever its size, and shortening
+and summaries drop the images of results they replace.
+
+```go
+agent.Config{
+	ToolImages: agent.ToolImagePolicy{
+		KeepRecent: new(1), // default 3; 0 sends none
+		Disabled:   false,  // true for models that can't read images
+	},
+}
+```
+
+With `Disabled` (or `KeepRecent` 0) each image becomes a placeholder such as
+`[image image/png, 240 KB]`, as before this feature. Callbacks and
+`Result.Messages` never carry image data. A tool end event's `Data.Output` is
+the text plus a line such as `[1 image, image/png, 240 KB]`, and
+`Data.Extra["images"]` gives `count`, `sent`, `media_types`, `bytes`,
+`summary` and, when some were left out, `rejected`.
+
 ## MCP
 
 The `mcp` module is for small tool binaries and local tool marketplaces:
@@ -147,7 +206,7 @@ The `mcp` module is for small tool binaries and local tool marketplaces:
 | HTTP/SSE helpers | Run or connect over stream-oriented HTTP transports when stdio is not enough. |
 | Server API | Register tools as Go functions with names, descriptions, schemas, and handlers. |
 | Client API | Connect to a server, list tools, and call tools. |
-| Agent adapter | Convert MCP tools into `agent.Tool` values so agents can use external servers. |
+| Agent adapter | Convert MCP tools into `agent.Tool` values so agents can use external servers, images in their results included. |
 
 This is intentionally not a full MCP kitchen sink. It is the smallest practical base for Go tool servers that can be compiled and dropped into another app.
 

@@ -123,3 +123,16 @@ func TestFunctionCallOutputCarriesImages(t *testing.T) {
 		t.Fatalf("round trip = %s", again)
 	}
 }
+
+// Without "strict": false the Responses API treats a function as strict and
+// the model fills in every optional argument.
+func TestResponsesToolsAreSentNotStrict(t *testing.T) {
+	tool := ResponsesToolFromLangChain(lc.ToolDefinition{Name: "screenshot", ArgsSchema: map[string]any{"type": "object", "properties": map[string]any{"window_id": map[string]any{"type": "string"}}}})
+	data, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"strict":false`) {
+		t.Fatalf("%s", data)
+	}
+}

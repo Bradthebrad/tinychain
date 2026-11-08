@@ -71,28 +71,7 @@ func (s *Server) RunStdio(ctx context.Context, stdin io.Reader, stdout io.Writer
 	if stdout == nil {
 		stdout = defaultStdout()
 	}
-	scanner := bufio.NewScanner(stdin)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	writer := bufio.NewWriter(stdout)
-	defer writer.Flush()
-	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		var req Request
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			writeResponse(writer, newError(nil, -32700, err.Error()))
-			continue
-		}
-		resp := s.Handle(ctx, req)
-		if resp.JSONRPC == "" {
-			continue
-		}
-		writeResponse(writer, resp)
-	}
-	return scanner.Err()
+	return s.runCancellableStdio(ctx, stdin, stdout)
 }
 
 func (s *Server) Handler(path string) http.Handler {

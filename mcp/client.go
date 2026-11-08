@@ -786,18 +786,46 @@ func (t *StdioTransport) dispatch(line []byte) {
 	}
 }
 
+// WithCancellationDrain keeps a stdio RoundTrip outstanding after cancellation
+// until the server responds (handler completed) or the transport terminates.
+// Use for mutations whose caller must retain its operation lease while the
+// server is still working. There is deliberately no timeout: an unresponsive
+// server must be closed by its owner, not mistaken for an acknowledged cancel.
+// This is a local stdio extension; HTTP transports do not provide this guarantee.
+// Cancellation never proves that an already dispatched mutation was undone.
+func WithCancellationDrain(ctx context.Context) context.Context {
+	return context.WithValue(ctx, cancellationDrainKey{}, true)
+}
+
+type cancellationDrainKey struct{}
+
 func (t *StdioTransport) writeMessage(message any) error {
+	return t.writeMessageContext(context.Background(), message)
+}
+
+func (t *StdioTransport) writeMessageContext(ctx context.Context, message any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	data, err := json.Marshal(message)
 	if err != nil {
 		return err
 	}
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
+	// A request may have been cancelled while queued behind another writer.
+	// Never send its arguments once that cancellation is known.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	_, err = t.stdin.Write(append(data, '\n'))
 	return err
 }
 
 func (t *StdioTransport) RoundTrip(ctx context.Context, req Request) (Response, error) {
+	if err := ctx.Err(); err != nil {
+		return Response{}, err
+	}
 	t.start()
 	key := idKey(req.ID)
 	ch := make(chan Response, 1)
@@ -819,15 +847,30 @@ func (t *StdioTransport) RoundTrip(ctx context.Context, req Request) (Response, 
 	}
 	t.pending[key] = ch
 	t.mu.Unlock()
-	if err := t.writeMessage(req); err != nil {
+	if err := t.writeMessageContext(ctx, req); err != nil {
 		t.forget(key)
 		return Response{}, err
 	}
 	select {
 	case <-ctx.Done():
+		// MCP cancellation is a notification, not an acknowledgement. In drain
+		// mode retain the waiter until the original response/connection exit.
+		params, _ := json.Marshal(map[string]any{"requestId": req.ID})
+		go func() {
+			_ = t.writeMessage(Request{JSONRPC: JSONRPCVersion, Method: "notifications/cancelled", Params: params})
+		}()
+		if drain, _ := ctx.Value(cancellationDrainKey{}).(bool); drain {
+			select {
+			case <-ch:
+			case <-t.done:
+			}
+		}
 		t.forget(key)
 		return Response{}, ctx.Err()
 	case resp := <-ch:
+		if err := ctx.Err(); err != nil {
+			return Response{}, err
+		}
 		return resp, nil
 	case <-t.done:
 		select {
@@ -841,7 +884,7 @@ func (t *StdioTransport) RoundTrip(ctx context.Context, req Request) (Response, 
 
 func (t *StdioTransport) Notify(ctx context.Context, req Request) error {
 	req.ID = nil
-	return t.writeMessage(req)
+	return t.writeMessageContext(ctx, req)
 }
 
 func (t *StdioTransport) forget(key string) {

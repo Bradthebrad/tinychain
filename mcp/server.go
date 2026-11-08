@@ -69,6 +69,9 @@ func (s *Server) listTools() []Tool {
 }
 
 func (s *Server) callTool(ctx context.Context, params CallToolParams) (ToolResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ToolResult{}, err
+	}
 	tool, ok := s.tools[params.Name]
 	if !ok {
 		return ToolResult{}, fmt.Errorf("tool %q not found", params.Name)

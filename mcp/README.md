@@ -121,3 +121,29 @@ serves the images of an `agent.ContentTool` as image blocks.
 - `Initialize` sends `notifications/initialized` and, when roots are set with
   `client.SetRoots`, advertises the `roots` capability. Call
   `client.NotifyRootsChanged` after the allowed directories change.
+
+### Stdio cancellation and sensitive mutations
+
+`RunStdio` keeps a bounded, serialized handler queue while reading cancellation
+notifications independently. `notifications/cancelled` cancels the matching
+queued or executing request context. Queued calls recheck cancellation before
+handler dispatch; handlers must also check it immediately before side effects.
+Disconnect cancels queued mutations and drains the executing handler. A handler
+must not return while it still owns local background mutation work.
+
+`StdioTransport` checks cancellation before writing and again after acquiring
+its write lock, and sends request-ID cancellation for dispatched calls. Ordinary
+calls return promptly; sensitive mutations should use
+`client.CallTool(mcp.WithCancellationDrain(ctx), name, args)`. This local stdio
+option keeps the call outstanding until the original response arrives or the
+transport terminates, even after cancellation. Retain authorization leases,
+serialization locks and in-flight accounting until that return. There is no
+implicit drain timeout: close the transport explicitly if a peer does not
+cooperate. Do not use this as an HTTP cancellation guarantee.
+
+A completion response means the handler returned, not that cancellation rolled
+back a native write. In-flight UIA/CDP writes can have uncertain outcomes even
+when cancellation returns an error. Never automatically retry them. Servers
+that stop waiting on an external mutation before its native acknowledgement
+must preserve an uncertain/poisoned session policy; a cancellation notification
+alone is never a mutation-completion acknowledgement.

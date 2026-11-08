@@ -261,13 +261,25 @@ func (i *ResponsesInput) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// ResponsesToolFromLangChain makes a function tool for the Responses API.
+// Strict is sent as false: the Responses API treats a function without it
+// as strict, which makes the model fill in every property, so optional
+// arguments arrive as "" or 0 instead of being left out.
 func ResponsesToolFromLangChain(tool lc.ToolDefinition) ResponsesTool {
 	return ResponsesTool{
 		Type:        "function",
 		Name:        tool.Name,
 		Description: tool.Description,
 		Parameters:  tool.ArgsSchema,
+		Strict:      NotStrict(),
 	}
+}
+
+// NotStrict is the Strict value for tools whose optional arguments may be
+// left out.
+func NotStrict() *bool {
+	f := false
+	return &f
 }
 
 func contentText(content lc.Content) string {

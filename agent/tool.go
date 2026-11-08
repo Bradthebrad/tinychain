@@ -65,9 +65,29 @@ func NormalizeToolSchema(schema map[string]any) map[string]any {
 	return out
 }
 
+// Keywords whose value maps names to schemas: the names are the caller's
+// (a property may well be called "required" or "properties"), so only the
+// schemas under them are normalized, never the map itself.
+var namedSchemaKeywords = map[string]bool{"properties": true, "patternProperties": true, "$defs": true, "definitions": true, "dependentSchemas": true}
+
+// Keywords whose value is data, not a schema: kept as they are.
+var schemaDataKeywords = map[string]bool{"enum": true, "const": true, "default": true, "examples": true}
+
 func normalizeToolSchemaMap(schema map[string]any) map[string]any {
 	out := make(map[string]any, len(schema)+2)
 	for key, value := range schema {
+		if schemaDataKeywords[key] {
+			out[key] = value
+			continue
+		}
+		if named, ok := value.(map[string]any); ok && namedSchemaKeywords[key] {
+			inner := make(map[string]any, len(named))
+			for name, sub := range named {
+				inner[name] = normalizeToolSchemaValue(sub)
+			}
+			out[key] = inner
+			continue
+		}
 		out[key] = normalizeToolSchemaValue(value)
 	}
 	if properties, ok := out["properties"]; ok && properties == nil {

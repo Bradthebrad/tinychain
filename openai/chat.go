@@ -89,15 +89,51 @@ type ChatChoice struct {
 }
 
 type Usage struct {
-	PromptTokens            int            `json:"prompt_tokens,omitempty"`
-	CompletionTokens        int            `json:"completion_tokens,omitempty"`
-	TotalTokens             int            `json:"total_tokens,omitempty"`
-	PromptTokensDetails     map[string]int `json:"prompt_tokens_details,omitempty"`
-	CompletionTokensDetails map[string]int `json:"completion_tokens_details,omitempty"`
-	InputTokens             int            `json:"input_tokens,omitempty"`
-	OutputTokens            int            `json:"output_tokens,omitempty"`
-	InputTokensDetails      map[string]int `json:"input_tokens_details,omitempty"`
-	OutputTokensDetails     map[string]int `json:"output_tokens_details,omitempty"`
+	PromptTokens            int          `json:"prompt_tokens,omitempty"`
+	CompletionTokens        int          `json:"completion_tokens,omitempty"`
+	TotalTokens             int          `json:"total_tokens,omitempty"`
+	PromptTokensDetails     TokenDetails `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails TokenDetails `json:"completion_tokens_details,omitempty"`
+	InputTokens             int          `json:"input_tokens,omitempty"`
+	OutputTokens            int          `json:"output_tokens,omitempty"`
+	InputTokensDetails      TokenDetails `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails     TokenDetails `json:"output_tokens_details,omitempty"`
+}
+
+// TokenDetails are a usage breakdown such as {"cached_tokens": 120}.
+// Providers add to these objects over time, nested objects included, so
+// decoding takes what it can count and never fails a response over them:
+// numbers are kept (rounded down), numbers inside nested objects are kept
+// under "outer.inner", and anything else is skipped.
+type TokenDetails map[string]int
+
+func (d *TokenDetails) UnmarshalJSON(data []byte) error {
+	var raw any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		*d = nil
+		return nil
+	}
+	out := TokenDetails{}
+	var walk func(prefix string, m map[string]any, depth int)
+	walk = func(prefix string, m map[string]any, depth int) {
+		for k, v := range m {
+			switch typed := v.(type) {
+			case float64:
+				out[prefix+k] = int(typed)
+			case map[string]any:
+				if depth < 4 {
+					walk(prefix+k+".", typed, depth+1)
+				}
+			}
+		}
+	}
+	walk("", obj, 0)
+	*d = out
+	return nil
 }
 
 // ChatMessages converts messages for Chat Completions. Tool messages can't

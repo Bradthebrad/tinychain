@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -85,7 +86,7 @@ func (c Client) chatStream(ctx context.Context, req ChatCompletionRequest) (*Cha
 				} `json:"delta"`
 			} `json:"choices"`
 		}
-		if err := json.Unmarshal(b, &e); err != nil {
+		if err := decodeStreamEvent(b, &e); err != nil {
 			return err
 		}
 		if len(e.Error) > 0 {
@@ -159,7 +160,7 @@ func (c Client) responsesStream(ctx context.Context, req ResponsesRequest) (*Res
 			Delta    string             `json:"delta"`
 			Response *ResponsesResponse `json:"response"`
 		}
-		if err := json.Unmarshal(b, &e); err != nil {
+		if err := decodeStreamEvent(b, &e); err != nil {
 			return err
 		}
 		switch e.Type {
@@ -181,4 +182,16 @@ func (c Client) responsesStream(ctx context.Context, req ResponsesRequest) (*Res
 		return nil, fmt.Errorf("openai: truncated responses stream")
 	}
 	return out, nil
+}
+
+// decodeStreamEvent decodes one streamed event. A field whose type the
+// provider changed leaves the rest of the event decoded, and the stream
+// goes on: one new field shouldn't fail a whole response.
+func decodeStreamEvent(b []byte, v any) error {
+	err := json.Unmarshal(b, v)
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		return nil
+	}
+	return err
 }
